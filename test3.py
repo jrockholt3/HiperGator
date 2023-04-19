@@ -1,0 +1,43 @@
+from Robot_5link import *
+from optimized_functions_5L import *
+
+th = np.zeros(5, dtype=float) - shift
+obj = np.array([.1,.2,.75])
+
+# asb_arr = asb_link_i(3, obj, th, a, l, S)
+# print(asb_arr)
+# print(np.cos(np.pi/2))
+# T_arr = get_transforms(th, S, a, l)
+T1F = T_1F(th[0],S[0])
+T_21 = T_ji(th[1],a[0],l[0],S[1])
+T_32 = T_ji(th[2],a[1],l[1],S[2])
+T_3F = np.matmul(T1F,T_21)
+T_3F = np.matmul(T_3F,T_32)
+# T_3F = T_32@T_21@T1F
+T_F3 = T_inverse(T_3F)
+vec = np.array([obj[0],obj[1],obj[2],1])
+# print(T_F3@vec) 
+# print(T_F3@np.array([0,0,0,1]))
+
+# print('S', S)
+# print('l', l)
+print('S',S)
+print('l', l)
+print('T1F')
+print(np.round(T1F,2))
+print('T_21')
+print(np.round(T_21,2))
+print('T_32')
+print(np.round(T_32,2))
+print('T_3f')
+print(np.round(T_3F,2))
+print('T_F3')
+print(np.round(T_F3,2))
+print(obj, 'asb 3')
+print(T_F3@vec)
+print('with Rot_Z')
+print(np.round(Rot_Z(-np.pi/2)@T_F3@vec,2))
+print('Proximity')
+print(proximity(obj, np.zeros(5,dtype=float), a, l, S))
+print('actual', np.sqrt(obj[0]**2 + obj[1]**2))
+# print(np.round(points(th,S,a,l),2))
