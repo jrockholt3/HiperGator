@@ -1,6 +1,6 @@
 import numpy as np
 from rtree import index
-from Robot_Env_v2 import RobotEnv, dt, t_limit, min_prox
+from env_config import *
 import uuid
 
 def gen_obstacles(env:RobotEnv, obs_index:index.Index):

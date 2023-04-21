@@ -1,6 +1,5 @@
 from numba import njit, jit, int32, float64
 import numpy as np
-# from env_config import dt, t_limit, thres, vel_thres, jnt_vel_max, min_prox, vel_prox, prox_thres, damping as Z, P, D, tau_max
 from env_config import *
 
 @njit((float64[:,:])(float64, float64, float64, float64), nogil=True)

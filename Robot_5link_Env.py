@@ -1,5 +1,5 @@
 import numpy as np
-from numba import jit_module,njit,float64, int32, jit
+from numba import njit,float64, int32, jit
 from numba.typed import Dict
 from numba.core import types
 from env_config import dt, t_limit, thres, vel_thres, prox_thres, min_prox, vel_prox, tau_max, damping, P, D, jnt_vel_max, j_max
@@ -9,8 +9,6 @@ from support_classes import vertex
 from Object_v2 import rand_object
 from Robot_5link import forward, reverse, S, l, a, shift, get_coords
 from spare_tnsr_replay_buffer import ReplayBuffer
-import torch 
-# from Networks import Actor
 
 rng = np.random.default_rng()
 
@@ -134,7 +132,7 @@ def gen_obs_pos(obj_list):
 #         self.shape = np.array([5])  
 
 class RobotEnv(object):
-    def __init__(self, actor=None, noise=None, has_objects=True, num_obj=3, start=None, goal=None, name='robot_5L',batch_size=128):
+    def __init__(self, has_objects=True, num_obj=3, start=None, goal=None, name='robot_5L',batch_size=128):
 
         if isinstance(start, np.ndarray):
             self.start = start
@@ -184,9 +182,6 @@ class RobotEnv(object):
         self.info = {}
         self.jnt_err = calc_jnt_err(self.th, self.goal)
         self.dedt = np.zeros_like(self.jnt_err, dtype=float)
-
-        self.actor = actor
-        self.noise = noise
 
         if has_objects:
             objs = []
@@ -312,9 +307,4 @@ class RobotEnv(object):
 
     def sample_memory(self):
         return self.memory.sample_buffer(self.batch_size)
-
-    def choose_action(self, x, jnt_err, dedt):
-        action = self.actor.forward(x, jnt_err, dedt)
-        action += torch.normal(torch.zeros_like(action),self.noise)
-        return action
 

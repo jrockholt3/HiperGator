@@ -6,7 +6,7 @@ from Robot_5link import S, l, a
 import time as T
 from time import time
 from Object_v2 import Cylinder
-from Parallel_Robot_Env import run_episode, run_rrt
+from run_rrt import run_rrt
 from path_replay_5L_from_memory import replay_from_memory
 # from pathos.threading import ThreadPool
 # from Networks import Actor 
@@ -45,7 +45,7 @@ from env_config import *
 
 goal = np.ones(5)*np.pi/4
 start = np.zeros(5,dtype=float)
-env = RobotEnv(num_obj=1,start=start, goal=goal)
+env = RobotEnv(num_obj=1)#,start=start, goal=goal)
 env,score,converged = run_rrt(env)
 print(score)
 replay_from_memory(env)

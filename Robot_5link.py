@@ -1,10 +1,7 @@
 import numpy as np
-from numpy import dot, cross
 from numpy.linalg import norm as norm
 from numba import njit, float64
 from optimized_functions import T_1F, T_ji
-# import matplotlib.pyplot as plt
-# from mpl_toolkits import mplot3d
 from Object_v2 import Cylinder, cyl_get_coords
 
 shift = np.array([[0,0],[np.pi/2, np.pi/2],[np.pi/2, np.pi/2],[0,0],[-np.pi/2,-np.pi/2]])

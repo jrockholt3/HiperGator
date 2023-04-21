@@ -1,5 +1,5 @@
 import torch 
-# import MinkowskiEngine as ME
+import MinkowskiEngine as ME
 import numpy as np
 import Robot_5link
 from Robot_5link_Env import RobotEnv

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from time import time 
 from spare_tnsr_replay_buffer import ReplayBuffer
-from Robot_Env import tau_max, scale
+from env_config import *
 
 conv_out1 = 32
 conv_out2 = 64
