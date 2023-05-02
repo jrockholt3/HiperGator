@@ -1,11 +1,12 @@
 from Robot_5link_Env import RobotEnv, env_replay
 from Robot_5link import get_coords, S, a, l
-from spare_tnsr_replay_buffer import ReplayBuffer
+from sparse_tnsr_replay_buffer import ReplayBuffer
 import numpy as np
 from env_config import *
 from rrt_5link import RRT_star
 from trajectory import Trajectory_v2
 from optimized_functions import calc_jnt_err, PDControl
+from optimized_functions_5L import create_store_state
 from env_config import thres as r_thres
 
 def run_rrt(env:RobotEnv):
@@ -29,7 +30,7 @@ def run_rrt(env:RobotEnv):
     if len(t_list) > 0:
         env.t_step = 0
         env.th = env.start
-        env.w = np.zeros(env.th.shape, dtype=float)
+        env.w = np.zeros(env.th.shape)
         converged = True
         t_arr = np.vstack(t_list)
         J_arr = np.vstack(traj)
@@ -41,32 +42,38 @@ def run_rrt(env:RobotEnv):
         # coords, feats = rrt_get_coords(t,th,obs_arr)
         # jnt_err = calc_jnt_err(th, np.array(goal))
         # dedt = -1*w
-        state = env.get_state()
+        # state = env.get_state()
         score = 0
         done = False
+        store_state = create_store_state(env)
         for i in range(tau_list.shape[0]):
             tau = tau_list[i,:]
             t = env.t_step
             nxt_state, reward, done, info = env.step(tau,eval=True)
-            env.store_transition(state, tau, reward, nxt_state, done, t)
+            nxt_store_state = create_store_state(env)
+            env.store_transition(store_state, tau, reward, nxt_store_state, done, t)
+            store_state = nxt_store_state
             state = nxt_state
             score += reward
             th, w = env.th, env.w
-        print("RRT steps", tau_list.shape[0])
-        if done:
-            print("ended with RRT")
-        else:
-            print("ending with PD control")
+        # print("RRT steps", tau_list.shape[0])
+        # if done:
+        #     print("ended with RRT")
+        # else:
+        #     print("ending with PD control")
         PD_steps = 0
         while not done:
-            tau = np.zeros(5, dtype=float)
+            tau = np.zeros(5)
             t = env.t_step
-            nxt_state, reward,done, info = env.step(tau, use_PID=True,eval=True)
+            nxt_state, reward, done, info = env.step(tau,use_PID=True,eval=True)
+            nxt_store_state = create_store_state(env)
             action = info['action']
-            env.store_transition(state, action, reward, nxt_state,done, t)
+            converged = info['converged']
+            env.store_transition(store_state, action, reward, nxt_store_state, done, t)
+            store_state = nxt_store_state
             score += reward
             PD_steps += 1
-        print("steps with PD:", PD_steps)
+        # print("steps with PD:", PD_steps)
     else:
         score = 0
         converged = False

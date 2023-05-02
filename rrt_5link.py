@@ -1,13 +1,13 @@
 from Robot_5link_Env import RobotEnv,gen_obs_pos
-from Robot_5link import S,a,l
+from Robot_5link import S,a,l, calc_eef_vel
 from env_config import *
 from support_classes import vertex, Tree
 import numpy as np 
 # import matplotlib as plt
 # from mpl_toolkits import mplot3d
 from time import time 
-from optimized_functions_5L import nxt_state, reward
-from optimized_functions import angle_calc
+from optimized_functions_5L import *
+from optimized_functions import angle_calc, clip
 
 class RRT_star():
     def __init__(self, start, goal, max_samples, r, d, thres, n, steps, env:RobotEnv):
@@ -82,13 +82,13 @@ class RRT_star():
         else:
             return th2
     
-    def get_reachable(self, v, targ):
-        if v.t < t_limit/dt:
-            targ_i = self.steer(v.th, targ)
-            th_fin, w_fin, reward, t_fin, flag = self.env.env_replay(v, targ_i, self.obs_dict, self.steps)
-            return vertex(tuple(th_fin), t_fin, w_fin, reward, targ=targ_i), flag
-        else:
-            return None, False
+    # def get_reachable(self, v, targ):
+    #     if v.t < t_limit/dt:
+    #         targ_i = self.steer(v.th, targ)
+    #         th_fin, w_fin, reward, t_fin, flag = self.env.env_replay(v, targ_i, self.obs_dict, self.steps)
+    #         return vertex(tuple(th_fin), t_fin, w_fin, reward, targ=targ_i), flag
+    #     else:
+    #         return None, False
 
     def get_reachable_v2(self, v, targ):
         # calculates a reachable node give the target and current node
@@ -98,18 +98,24 @@ class RRT_star():
             q_ = np.array(targ_i)
             t,q,q_dot,q_2dot = v.t,np.array(v.th),v.w,v.tau
             J = (q_ - (q_2dot*dt**2/2 + q_dot*dt + q)) / (dt**3/6)
-            J = np.clip(J, -1*j_max, j_max) # clipping for maximum jerk
+            J = np.clip(J, -j_max,j_max) # clipping for maximum jerk
+            temp = np.ones(5)*tau_max
             score = 0
-            for i in range(self.steps):
+            i=0
+            while i < self.steps and t < t_limit/dt:
                 q_2dot = J*dt + q_2dot
-                q_2dot = np.clip(q_2dot, -1*tau_max, tau_max)
+                q_2dot = np.clip(q_2dot,-tau_max,tau_max)
                 temp = nxt_state(self.obs_dict[t],q,q_dot,q_2dot,a,l,S)
                 q = temp[0:q.shape[0],0]
                 q_dot = temp[0:q.shape[0],1]
+                prox = temp[-1,0]
                 t = t+1
-                score += reward()
+                eef_vel,eef = calc_eef_vel(q,q_dot)
+                v_dot = calc_ev_dot(eef,eef_vel,self.obs_dict[t])
+                score += reward_func(prox,v_dot,self.env.weights)
+                i+=1
             d = np.linalg.norm(q - np.array(v.th))
-            if d >= self.thres:
+            if d >= self.thres and t <= t_limit/dt:
                 v = vertex(th=tuple(q),t=t,w=q_dot,tau=q_2dot,J=J,reward=score,targ=targ_i)
                 return v, True
             else:
@@ -227,7 +233,7 @@ class RRT_star():
             if loop_count%100 == 0:
                 v_near = self.get_win_radius(self.goal, self.r)
                 if len(v_near) > self.n:
-                    print('converaged',len(v_near))
+                    # print('converaged',len(v_near))
                     r_best = -np.inf
                     for v in v_near:
                         r_i = self.reward_calc(v)
@@ -245,7 +251,7 @@ class RRT_star():
                     print('failed to converge')
                     converged = True
         
-        print("edge_count",self.edge_count)
+        # print("edge_count",self.edge_count)
         return t_list, traj
     
     def plot_graph(self, every=10, add_path=False, path=None):

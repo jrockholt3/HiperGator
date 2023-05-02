@@ -1,31 +1,18 @@
 from numba import njit, int32, float64
-from optimized_functions import T_1F, T_ji, T_inverse, calc_clip_vel, calc_jnt_err, angle_calc, PDControl
+import numba as nb
+from optimized_functions import T_1F, T_ji, T_inverse, calc_jnt_err, angle_calc, PDControl, clip
 import numpy as np
 from env_config import *
 from env_config import damping as Z
 from Robot_5link import shift, get_transforms, points
 
-# @njit((float64[:])(int32,float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
-# def asb_link_i(link, obj_pos, th, a, l, S):
-#     """
-#     inputs: link = body #
-#         th = jnt angle [th1, th2, ... thn]
-#         a = twist angle [aph1, aph2 ... aphn]
-#         l = link length [l1, l2, .. ln]
-#         S = joint offsets [S1, S2, ... Sn]
-#     return: the objects position asb link # link
-#     """
-#     if th.shape[0] < link:
-#         print('asb_link_i: not enough links, link=', link)
-#         return np.array([np.nan, np.nan, np.nan], dtype=float64)
-#     T_arr = get_transforms(th,S,a,l)
-#     # T = T_1F(th[0],S[0])
-#     # for i in range(1, link):
-#     #     T = T@T_ji(th[i],a[i-1],l[i-1],S[i])
-#     for i in range()
-#     inv_T = T_inverse(T)
-#     vec = np.array([obj_pos[0],obj_pos[1],obj_pos[2],1])
-#     return inv_T@vec
+def create_store_state(env):
+    objs_arr = np.zeros((3,len(env.objs)))
+    for i in range(len(env.objs)):
+        o = env.objs[i]
+        objs_arr[:,i] = o.path(env.t_step)
+    
+    return (env.th, objs_arr, env.jnt_err, env.dedt)
 
 @njit((float64[:,:])(float64), nogil=True)
 def Rot_Z(th):
@@ -37,7 +24,7 @@ def Rot_Z(th):
                   [0.0, 0.0, 0.0, 1.0]])
     return T.T
 
-@njit((float64)(float64[:],float64[:],float64[:],float64[:],float64[:]), nogil=True)
+@njit(nb.types.UniTuple(float64,2)(float64[:],float64[:],float64[:],float64[:],float64[:]), nogil=True)
 def proximity(obj_pos, th, a, l, S):
     '''
     input 
@@ -64,31 +51,54 @@ def proximity(obj_pos, th, a, l, S):
         elif s < u23 + u35:
             u_i = u35_f * (s - u23) + O3
         elif s <= u23 + u35 + u5t:
-            u_i = u5t_f * (s - u23+u35) + O5
+            u_i = u5t_f * (s - u23-u35) + O5
             
         prox_i = np.linalg.norm(obj_pos - u_i)
         proxs[i] = prox_i
         s += step_size
     prox = np.min(proxs)
+    zmin = min([O3[2],O5[2],Ptool_f[2]])
+    return prox, zmin
 
-    return prox
 
-@njit((float64[:,:])
-      (float64[:,:],float64[:],float64[:],float64[:],float64[:],float64[:],float64[:]),
-      nogil=True)
+@njit(nogil=True)
+def calc_ev_dot(eef,eef_vel,obj_arr):
+    r,c = obj_arr.shape
+    v_dot_sum = 0
+    for i in range(c):
+        temp = obj_arr[:,c] - eef
+        temp = temp/np.linalg.norm(temp)
+        v_dot = np.dot(eef_vel,temp)
+        if v_dot > 0:
+            v_dot_sum += v_dot
+    return v_dot_sum/c 
+
+@njit(nogil=True)
+def reward_func(prox, ev_dot, w):
+    return -1*w[0] - w[1]*(1-np.exp(-prox**2/0.5**2)) - w[2]*(1-np.exp(-ev_dot**2))
+
+@njit(nogil=True) # (float64[:])(float64,float64),
+def calc_clip_vel(prox, zmin):
+    prox_clip = np.ones(5) * jnt_vel_max * (1 - np.exp(-(prox-min_prox)**2/(.659*(vel_prox-min_prox)**2)))
+    z_clip = np.ones(5) * jnt_vel_max * (1 - np.exp(-(zmin-.14)**2/(1.61*(zmin-.34))**2))
+    z_clip[0] = jnt_vel_max
+    clip_vec = np.ones(5)
+    for i in range(5):
+        clip_vec[i] = min(clip_vec[i], prox_clip[i])
+    return clip_vec
+
+# @njit((float64[:,:])(float64[:,:],float64[:],float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
+@njit(nogil=True)
 def nxt_state(obj_pos, th, w, tau, a, l, S):
     '''
     obj_pos = [pos1, pos2,...]
     '''
-    prox_arr = np.zeros(obj_pos.shape[1],dtype=float)
+    prox_arr = np.zeros(obj_pos.shape[1])
     for i in range(0, obj_pos.shape[1]):
-        prox_arr[i] = proximity(obj_pos[:,i], th, a, l, S)
+        prox_arr[i],zmin = proximity(obj_pos[:,i], th, a, l, S)
     prox = np.min(prox_arr)
 
-    if prox <= vel_prox:
-        vel_clip = calc_clip_vel(prox)
-    else:
-        vel_clip = jnt_vel_max
+    vel_clip = calc_clip_vel(prox,zmin)
 
     if prox <= min_prox:
         paused = True
@@ -98,12 +108,12 @@ def nxt_state(obj_pos, th, w, tau, a, l, S):
     if not paused:
         nxt_w = (tau - Z*w)*dt + w
         if np.any(np.abs(nxt_w) > vel_clip):
-            nxt_w = np.clip(nxt_w, -vel_clip, vel_clip)
+            nxt_w = clip(nxt_w, vel_clip)
             tau = (nxt_w - w)/dt + Z*w
         
         nxt_th = (tau - Z*w)*dt**2/2 + w*dt + th
     else:
-        nxt_w = np.zeros(w.shape[0], dtype=float)
+        nxt_w = np.zeros(w.shape[0])
         nxt_th = th
 
     if np.any(nxt_th >= jnt_max) or np.any(nxt_th <= jnt_min):
@@ -112,7 +122,7 @@ def nxt_state(obj_pos, th, w, tau, a, l, S):
         nxt_th[nxt_th >= jnt_max] = jnt_max[nxt_th >= jnt_max]
         nxt_th[nxt_th <= jnt_min] = jnt_min[nxt_th <= jnt_min]
 
-    package = np.zeros((6,2),dtype=float)
+    package = np.zeros((6,2))
     for i in range(0,nxt_th.shape[0]):
         package[i,0] = nxt_th[i]
 
@@ -121,7 +131,3 @@ def nxt_state(obj_pos, th, w, tau, a, l, S):
 
     package[-1,0] = prox
     return package
-
-
-def reward():
-    return -1

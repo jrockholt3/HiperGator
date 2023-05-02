@@ -21,11 +21,10 @@ q_val= Queue(maxsize=15)
 def data_loader(buffer,eval_buffer,shutdown):
     run = True 
     wait_time = .1
-    max_idle_time = 2
+    max_idle_time = 10
     max_iter = int(np.ceil(max_idle_time/wait_time))
     i = 0
     while run:
-        print('back to top',i)
         if shutdown.poll():
             print('shutting down')
             run = False
@@ -35,19 +34,15 @@ def data_loader(buffer,eval_buffer,shutdown):
             try:
                 q.put([states,actions,weights],timeout=1)
             except:
-                print('q full')
                 sleep(.1)
             i = 0
         elif not q_val.full():
-            print('adding to q_val')
             states,actions,weights,_,_,_ = eval_buffer.sample_buffer(batch_size)
             try:
                 q_val.put([states,actions,weights],timeout=1)
             except:
-                print('full')
                 sleep(.1)
         else:
-            print('all full')
             if i%100==0: print('idle',i)
             i+=1
             if i > int(max_iter): # stop runing after 10 seconds 

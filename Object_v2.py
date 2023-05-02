@@ -3,6 +3,8 @@ import numba as nb
 from numba import int32, float64, float32
 import math as m
 import numpy as np
+from env_config import *
+from env_config import limits as workspace_limits
 
 rng = np.random.default_rng()
 
@@ -10,7 +12,8 @@ rng = np.random.default_rng()
 def rnd_arr(arr, decimal,out):
     return np.round_(arr, decimal, out)
 
-@njit((float64[:])(float64[:],float64,float64[:,:]),nogil=True)
+# @njit((float64[:])(float64[:],float64,float64[:,:]),nogil=True)
+@njit(nogil=True)
 def quantize(arr, res, workspace_limits):
     # this helper function takes in a 3xN array of (x,y,z) coords and
     # outputs the ndx of the coord based on a array representing the whole workspace
@@ -37,8 +40,10 @@ def y_solve(x,z,r,pos):
 def r_solve(z,r,z_c):       
     return np.sqrt(np.abs(r**2 - (z-z_c)**2))
 
-@njit(nb.types.Tuple((float64[:,:],float64[:,:]))(float64[:],float64,float64,float64[:,:],float64,float64),nogil=True)
-def obj_get_coords(curr_pos, t, radius, workspace_limits, res,label):
+@njit(nb.types.Tuple((float64[:,:],float64[:,:]))(float64[:],float64),nogil=True) #,float64,float64[:,:],float64,float64),nogil=True)
+def obj_get_coords(curr_pos, t): #, radius, workspace_limits, res,label):
+    radius = obj_radius
+    label = obj_label
     x_abs = abs(curr_pos[0]) - radius
     y_abs = abs(curr_pos[1]) - radius
     z_abs = abs(curr_pos[2]) - radius 
@@ -47,8 +52,8 @@ def obj_get_coords(curr_pos, t, radius, workspace_limits, res,label):
     if x_abs-radius<=workspace_limits[0,1] and y_abs-radius<=workspace_limits[1,1] and\
             z_abs-radius<=workspace_limits[2,1]: 
         n = int(np.round(2*np.pi**2*radius**2/res**2))
-        coord_list = np.zeros((n,4),dtype=float)
-        feat_list = np.zeros((n,1),dtype=float)
+        coord_list = np.zeros((n,4),dtype=np.float64)
+        feat_list = np.zeros((n,1),dtype=np.float64)
         ndx = 0
         z = curr_pos[2] - radius
         while np.round(z,2) <= np.round(curr_pos[2] + radius,2):
@@ -90,8 +95,8 @@ def obj_get_coords(curr_pos, t, radius, workspace_limits, res,label):
 
 
 class rand_object():
-    def __init__(self,object_radius=.03, dt=.01, res=0.01, max_obj_vel = .6, \
-                label=1.0,workspace_limits=np.array([[-.75,.75],[-.75,.75],[0,1.05]])):
+    def __init__(self,object_radius=obj_radius, dt=.01, res=0.01, max_obj_vel = .6, \
+                label=obj_label,workspace_limits=np.array([[-.75,.75],[-.75,.75],[0,1.05]])):
         self.radius = object_radius
         self.res = res
         self.t = 0 # an interger defining the time step 
@@ -144,9 +149,9 @@ class rand_object():
 
     def get_coords(self, t, pos=None):
         if isinstance(pos, np.ndarray):
-            coords, feats = obj_get_coords(pos, t, self.radius, self.workspace_limits, self.res, self.label)
+            coords, feats = obj_get_coords(pos, t)
         else:
-            coords, feats = obj_get_coords(self.curr_pos, t, self.radius, self.workspace_limits, self.res, self.label)
+            coords, feats = obj_get_coords(self.path(t), t)
         return coords.astype(np.int16), feats.astype(np.float32)
 
     def step(self, time_step=None):
@@ -202,7 +207,7 @@ def cyl_get_coords(original, t, T, res, limits):
         arr_i = homo_trans(T,original[i,:])
         coord_list[i] = np.hstack((t_arr, quantize(arr_i[0:3],res,limits)))
         # coord_list[i] = np.hstack((t_arr, arr_i[0:3]))
-        feat_list[i] = 1.0
+        feat_list[i] = rob_label
     return coord_list, feat_list
 
 class Cylinder():

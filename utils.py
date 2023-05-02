@@ -1,35 +1,34 @@
 import torch 
 import MinkowskiEngine as ME
 import numpy as np
-import Robot_5link
-from Robot_5link_Env import RobotEnv
-from rtree import index
-import uuid
     
-def act_preprocessing(state,single_value=False,device='cuda'):
+def act_preprocessing(state, weights, single_value=False,device='cuda'):
     if single_value:
         coords,feats = ME.utils.sparse_collate([state[0]],[state[1]])
         jnt_err = state[2]#.clone().detach()
         jnt_err = torch.tensor(jnt_err,dtype=torch.double,device=device).view(1,state[2].shape[0])
         jnt_dedt = state[3]
         jnt_dedt = torch.tensor(jnt_dedt,dtype=torch.double,device=device).view(1,state[3].shape[0])
+        w = torch.tensor(weights,dtype=torch.double,device=device).view(1,weights.shape[0])
     else:
         coords,feats = ME.utils.sparse_collate(state[0],state[1])
         jnt_err = state[2]#.clone().detach()
         jnt_err = torch.tensor(jnt_err,dtype=torch.double,device=device)
         jnt_dedt = state[3]
         jnt_dedt = torch.tensor(jnt_dedt,dtype=torch.double,device=device)
+        w = torch.tensor(weights,dtype=torch.double,device=device)
 
     x = ME.SparseTensor(coordinates=coords, features=feats.double(),device=device)
-    return x, jnt_err, jnt_dedt
+    return x, jnt_err, jnt_dedt, w
 
-def crit_preprocessing(state, action, single_value=False, device='cuda'):
+def crit_preprocessing(state, weights, action, single_value=False, device='cuda'):
     if single_value:
         coords,feats = ME.utils.sparse_collate([state[0]],[state[1]])
         jnt_err = state[2]#.clone().detach()
         jnt_err = torch.tensor(jnt_err,dtype=torch.double,device=device).view(1,state[2].shape[0])
         jnt_dedt = state[3]
         jnt_dedt = torch.tensor(jnt_dedt,dtype=torch.double,device=device).view(1,state[3].shape[0])
+        w = torch.tensor(weights,dtype=torch.double,device=device).view(1,weights.shape[0])
         a = torch.tensor(action,dtype=torch.double,device=device).view(1,action.shape[0])
     else:
         coords,feats = ME.utils.sparse_collate(state[0],state[1])
@@ -37,10 +36,11 @@ def crit_preprocessing(state, action, single_value=False, device='cuda'):
         jnt_err = torch.tensor(jnt_err,dtype=torch.double,device=device)
         jnt_dedt = state[3]
         jnt_dedt = torch.tensor(jnt_dedt,dtype=torch.double,device=device)
+        w = torch.tensor(weights,dtype=torch.double,device=device)
         a = torch.tensor(action,dtype=torch.double,device=device)
 
     x = ME.SparseTensor(coordinates=coords, features=feats.double(),device=device)
-    return x, jnt_err, jnt_dedt, a
+    return x, jnt_err, jnt_dedt, w, a
 
 def create_stack(state:tuple):
     coord_list = []

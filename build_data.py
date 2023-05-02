@@ -1,18 +1,29 @@
+import warnings
+warnings.filterwarnings("ignore")
 from Robot_5link_Env import RobotEnv
-from spare_tnsr_replay_buffer import ReplayBuffer
-from Parallel_Robot_Env import run_rrt
-from Networks import Actor
+from sparse_tnsr_replay_buffer import ReplayBuffer
+from run_rrt import run_rrt
+import sys 
 
+def build_data(name):
+    memory = ReplayBuffer(file=name)
+    episode_num = 200
+    k = 0
+    loops = 0
+    loop_max = 1000
+    while memory.mem_cntr < memory.mem_size and k < episode_num and loops<loop_max:
+        loops +=1
+        env = RobotEnv()
+        env,score,converged = run_rrt(env)
+        if converged:
+            k+=1
+            memory.add_data([env.memory])
+            memory.save()
+            print(name,"converged, adding memory", memory.mem_cntr, k)
 
-actor = Actor(1,5,D=4,name='cpu_copy')
-memory = ReplayBuffer(int(1e6), jnt_d=5, time_d=6, file='rrt_data')
+    print(name,'finished, mem_cntr',memory.mem_cntr)
 
-k = 0
-loop_max = 1.5e6
-while memory.mem_cntr < memory.mem_size and k < loop_max:
-    env = RobotEnv(actor=actor,noise=.1*30)
-    env,score,converged = run_rrt(env)
-    if converged:
-        memory.add_data([env.memory])
-        memory.save()
-    
+if __name__ == "__main__":
+    args = sys.argv
+    name = args[1]
+    build_data(name)

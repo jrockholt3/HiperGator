@@ -2,6 +2,16 @@ from numba import njit, jit, int32, float64
 import numpy as np
 from env_config import *
 
+@njit(nogil=True)
+def clip(arr, limits):
+    for i in range(arr.shape[0]):
+        if abs(arr[i]) > limits[i]:
+            if arr[i] < 0:
+                arr[i] = -1*limits[i]
+            else:
+                arr[i] = limits[i]
+    return arr 
+
 @njit((float64[:,:])(float64, float64, float64, float64), nogil=True)
 def T_ji(thj, aij, lij, Sj):
     return np.array([[np.cos(thj),            -np.sin(thj),              0,            lij],
@@ -48,26 +58,26 @@ def asb_link3(obj_pos, th, a, l, S):
     vec = np.array([obj_pos[0],obj_pos[1],obj_pos[2],1])
     return inv_T@vec
 
-@njit((float64[:])(int32,float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
-def asb_link_i(link, obj_pos, th, a, l, S):
-    """
-    inputs: link = body #
-        th = jnt angle [th1, th2, ... thn]
-        a = twist angle [aph1, aph2 ... aphn]
-        l = link length [l1, l2, .. ln]
-        S = joint offsets [S1, S2, ... Sn]
-    return: the objects position asb link # link
-    """
-    if th.shape[0] < link:
-        print('asb_link_i: not enough links, link=', link)
-        return np.array([np.nan, np.nan, np.nan], dtype=float64)
+# @njit((float64[:])(int32,float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
+# def asb_link_i(link, obj_pos, th, a, l, S):
+#     """
+#     inputs: link = body #
+#         th = jnt angle [th1, th2, ... thn]
+#         a = twist angle [aph1, aph2 ... aphn]
+#         l = link length [l1, l2, .. ln]
+#         S = joint offsets [S1, S2, ... Sn]
+#     return: the objects position asb link # link
+#     """
+#     if th.shape[0] < link:
+#         print('asb_link_i: not enough links, link=', link)
+#         return np.array([np.nan, np.nan, np.nan], dtype=float64)
     
-    T = T_1F(th[0],S[0])
-    for i in range(1, link):
-        T = T@T_ji(th[i],a[i-1],l[i-1],S[i])
-    inv_T = T_inverse(T)
-    vec = np.array([obj_pos[0],obj_pos[1],obj_pos[2],1])
-    return inv_T@vec
+#     T = T_1F(th[0],S[0])
+#     for i in range(1, link):
+#         T = T@T_ji(th[i],a[i-1],l[i-1],S[i])
+#     inv_T = T_inverse(T)
+#     vec = np.array([obj_pos[0],obj_pos[1],obj_pos[2],1])
+#     return inv_T@vec
 
 @njit((float64)(float64[:],float64[:],float64[:],float64[:],float64[:]))
 def proximity(obj_pos, th, a, l, S):
@@ -100,10 +110,6 @@ def njit_forward(th, a, l, S, P_3):
     th = th + np.array([0,np.pi/2,0])
     return T_1F(th[0],S[0])@T_ji(th[1],a[0],l[0],S[1])@T_ji(th[2],a[1],l[1],S[2])@P_3    
 
-@njit((float64)(float64),nogil=True)
-def calc_clip_vel(prox):
-    return jnt_vel_max * (1 - np.exp(-(2/3)*(prox-min_prox)/(vel_prox-min_prox)**2))
-
 @njit((float64[:])(float64[:],float64[:]),nogil=True)
 def calc_jnt_err(curr,goal):
     # first two 
@@ -128,64 +134,65 @@ def angle_calc(th):
 @njit((float64[:])(float64[:],float64[:]),nogil=True)
 def PDControl(jnt_err, dedt):
     tau = P*jnt_err + D*dedt
-    tau = np.clip(tau, -tau_max, tau_max)
+    max_vec = np.ones(5,dtype=np.float64)*tau_max
+    tau = clip(tau,max_vec)
     return tau
 
-@njit((float64[:,:])(float64[:,:],float64[:],float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
-def nxt_state(obj_pos, th, w, tau, a, l, S):
-    '''
-    input current state of the robot
-        th, w
-    input action 
-    check proximity
-        if prox violation - stop the robot return new paused state,
-        else update state with action
-    with updated state check
-        safety violations
-            if safety violations, update robot position + vel to safe position
-        check termination conditions
-    calculate reward
-    return new state, new_th, new_w
-    '''
-    prox = -np.inf
-    prox_arr = np.zeros(obj_pos.shape[1])
-    for i in range(0,obj_pos.shape[1]):
-        prox_arr[i] = proximity(obj_pos[:,i], th, a, l, S)
-    prox = np.min(prox_arr)
+# @njit((float64[:,:])(float64[:,:],float64[:],float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
+# def nxt_state(obj_pos, th, w, tau, a, l, S):
+#     '''
+#     input current state of the robot
+#         th, w
+#     input action 
+#     check proximity
+#         if prox violation - stop the robot return new paused state,
+#         else update state with action
+#     with updated state check
+#         safety violations
+#             if safety violations, update robot position + vel to safe position
+#         check termination conditions
+#     calculate reward
+#     return new state, new_th, new_w
+#     '''
+#     prox = -np.inf
+#     prox_arr = np.zeros(obj_pos.shape[1])
+#     for i in range(0,obj_pos.shape[1]):
+#         prox_arr[i] = proximity(obj_pos[:,i], th, a, l, S)
+#     prox = np.min(prox_arr)
 
-    if prox <= vel_prox:
-        vel_clip = calc_clip_vel(prox)
-    else:
-        vel_clip = jnt_vel_max
+#     if prox <= vel_prox:
+#         vel_clip = calc_clip_vel(prox)
+#     else:
+#         vel_clip = jnt_vel_max
 
-    paused = False
-    if prox < min_prox:
-        paused = True
+#     paused = False
+#     if prox < min_prox:
+#         paused = True
     
-    if not paused: 
-        nxt_w = (tau - Z*w)*dt + w
-        nxt_th = (tau - Z*w)*dt**2/2 + w*dt + th
+#     if not paused: 
+#         nxt_w = (tau - Z*w)*dt + w
+#         nxt_th = (tau - Z*w)*dt**2/2 + w*dt + th
+#         clip_vec = np.ones(5,dtype=np.float64)*vel_clip
+#         nxt_w = clip(nxt_w,clip_vec)
+#     else:
+#         nxt_w = np.zeros_like(w)
+#         nxt_th = th
 
-        nxt_w = np.clip(nxt_w,-vel_clip,vel_clip)
-    else:
-        nxt_w = np.zeros_like(w)
-        nxt_th = th
+#     # check joint limits 
+#     if np.any(nxt_th >= jnt_max) or np.any(nxt_th <= jnt_min):
+#         nxt_w[nxt_th >= jnt_max] = 0
+#         nxt_w[nxt_th <= jnt_min] = 0
+#         nxt_th[nxt_th >= jnt_max] = jnt_max[nxt_th >= jnt_max]
+#         nxt_th[nxt_th <= jnt_min] = jnt_min[nxt_th <= jnt_min]
 
-    # check joint limits 
-    if np.any(nxt_th >= jnt_max) or np.any(nxt_th <= jnt_min):
-        nxt_w[nxt_th >= jnt_max] = 0
-        nxt_w[nxt_th <= jnt_min] = 0
-        nxt_th[nxt_th >= jnt_max] = jnt_max[nxt_th >= jnt_max]
-        nxt_th[nxt_th <= jnt_min] = jnt_min[nxt_th <= jnt_min]
+#     package = np.zeros((5,2),dtype=float64)
+#     for i in range(0, nxt_th.shape[0]):
+#         package[i,0] = nxt_th[i]
 
-    package = np.zeros((5,2),dtype=float64)
-    for i in range(0, nxt_th.shape[0]):
-        package[i,0] = nxt_th[i]
+#     for i in range(0, nxt_w.shape[0]):
+#         package[i,1] = nxt_w[i]
 
-    for i in range(0, nxt_w.shape[0]):
-        package[i,1] = nxt_w[i]
-
-    package[-1,0] = prox
-    return package
+#     package[-1,0] = prox
+#     return package
 
 

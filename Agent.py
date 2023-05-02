@@ -1,15 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import NAdam
+from torch.optim import Adam
 import numpy as np
 import MinkowskiEngine as ME
-from spare_tnsr_replay_buffer import ReplayBuffer
+from sparse_tnsr_replay_buffer import ReplayBuffer
 from Networks import Actor as Actor, Critic
 # from Reduced_Networks import Actor, Critic
 import pickle
 import gc 
-from Robot_Env import tau_max,scale 
+from env_config import * 
 from utils import act_preprocessing, crit_preprocessing
 
 mse_loss = nn.MSELoss()
@@ -50,41 +50,29 @@ class Agent():
 
         # loads the convolutional layers from a pre-trained critic
         if transfer:
-            temp = Critic(lr=.001,in_feat=1,D=4,name='PID_crit')
-            temp.load_checkpoint()
+            temp = Actor(name='chckptn_supervised_actor')
+            temp.load_checkpoint(load_as='chckptn_supervised_actor')
             # load every layer for critic
             self.critic.conv1.load_state_dict(temp.conv1.state_dict())
-            self.critic.conv2.load_state_dict(temp.conv2.state_dict())
-            self.critic.conv3.load_state_dict(temp.conv3.state_dict())
-            self.critic.conv4.load_state_dict(temp.conv4.state_dict())
-            self.critic.norm.load_state_dict(temp.norm.state_dict())
-            self.critic.linear.load_state_dict(temp.linear.state_dict())
-            self.critic.out.load_state_dict(temp.out.state_dict())
-            del temp
-            temp = Actor(lr=.001,in_feat=1,n_actions=3,D=4,name='PID_train')
-            temp.load_checkpoint()
+            for name,param in self.critic.named_parameters():
+                if 'conv1' in name:
+                    param.requires_grad = False
+
             # load last layers from PID_train
             self.actor.conv1.load_state_dict(temp.conv1.state_dict())
-            self.actor.conv2.load_state_dict(temp.conv2.state_dict())
-            self.actor.conv3.load_state_dict(temp.conv3.state_dict())
-            self.actor.conv4.load_state_dict(temp.conv4.state_dict())
-            self.actor.norm.load_state_dict(temp.norm.state_dict())
-            self.actor.linear.load_state_dict(temp.linear.state_dict())
-            self.actor.out.load_state_dict(temp.out.state_dict())
+            for name,param in self.actor.named_parameters():
+                if 'conv1' in name:
+                    param.requires_grad = False
+            
             del temp
 
-        if top_only:
-            # self.actor.conv1.requires_grad_(False)
-            # self.actor.conv2.requires_grad_(False)
-            # self.actor.conv3.requires_grad_(False)
-            self.critic.conv1.requires_grad_(False)
-            self.critic.conv2.requires_grad_(False)
-            self.critic.conv3.requires_grad_(False)
-            self.actor_optim = NAdam(params=self.actor.parameters(), lr=alpha)
-            self.critic_optim = NAdam(params=self.critic.parameters(), lr=beta)
+            non_frozen_params = [p for p in self.actor.parameters() if p.requires_grad]
+            self.actor_optim = Adam(params=non_frozen_params, lr=alpha)
+            non_frozen_params = [p for p in self.critic.parameters() if p.requires_grad]
+            self.critic_optim = Adam(params=non_frozen_params, lr=beta)
         else: 
-            self.actor_optim = NAdam(params=self.actor.parameters(), lr=alpha)
-            self.critic_optim = NAdam(params=self.critic.parameters(), lr=beta)
+            self.actor_optim = Adam(params=self.actor.parameters(), lr=alpha)
+            self.critic_optim = Adam(params=self.critic.parameters(), lr=beta)
 
         self.update_network_params(tau=1) # hard copy
 
@@ -123,29 +111,31 @@ class Agent():
                                 (1-tau)*target_actor_dict[name].clone()
         self.target_actor.load_state_dict(actor_dict)
 
-    def remember(self, state, action, reward, new_state, done,t):
-        self.memory.store_transition(state,action,reward,new_state,done,t)
+    def remember(self, state, weights, action, reward, new_state, done,t):
+        self.memory.store_transition(state,weights,action,reward,new_state,done,t)
 
-    def learn(self,batch=None,use_batch=False):
+    def learn(self,batch=None,use_batch=False,use_data=False,data=None):
         if self.memory.mem_cntr < self.batch_size:
             return 0.0
-        if use_batch:
-            state, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size,use_batch=True,batch=batch)
+        if use_data:
+            state, action, weight, reward, new_state, done = data[0],data[1],data[3],data[4],data[5]
+        elif use_batch:
+            state, action, weight, reward, new_state, done = self.memory.sample_buffer(self.batch_size,use_batch=True,batch=batch)
         else:
-            state, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
+            state, action, weight, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
 
         self.target_actor.eval()
         self.target_critic.eval()
         self.critic.train()
         self.actor.train()
 
-        new_x, new_jnt_pos, jnt_goal = act_preprocessing(new_state)
-        x, jnt_pos, jnt_goal, a = crit_preprocessing(state, action)
+        new_x, new_jnt_err, new_jnt_dedt, w = act_preprocessing(new_state, weights)
+        x, jnt_err, jnt_dedt, w, a = crit_preprocessing(state, weights, action)
 
         # target actions
-        target_actions = self.target_actor.forward(new_x,new_jnt_pos, jnt_goal)
+        target_actions = self.target_actor.forward(new_x,new_jnt_err, new_jnt_dedt,w)
         # target critic value - value of next state (next state and next action)
-        critic_value_ = self.target_critic.forward(new_x,new_jnt_pos,jnt_goal, target_actions)
+        critic_value_ = self.target_critic.forward(new_x,new_jnt_err,new_jnt_dedt,w, target_actions)
         
 
         target=[]
@@ -155,15 +145,15 @@ class Agent():
         
         # update critic 
         self.critic_optim.zero_grad()
-        critic_value = self.critic.forward(x,jnt_pos,jnt_goal,a)
+        critic_value = self.critic.forward(x,jnt_pos,jnt_goal,w,a)
         # critic_loss = F.l1_loss(critic_value, target)
         critic_loss = F.mse_loss(critic_value, target)
         critic_loss.backward()
         self.critic_optim.step()
 
         # update actor
-        mu = self.actor.forward(x,jnt_pos,jnt_goal)
-        actor_loss = -1*self.critic.forward(x,jnt_pos,jnt_goal,mu).mean()
+        mu = self.actor.forward(x,jnt_pos,jnt_goal,w)
+        actor_loss = -1*self.critic.forward(x,jnt_pos,jnt_goal,w,mu).mean()
         # print('actor_loss',actor_loss)
         self.actor_optim.zero_grad()
         actor_loss.backward()
@@ -175,58 +165,19 @@ class Agent():
 
         return critic_loss.item()
 
-    def learn_from_PID(self):
-        if self.memory.mem_cntr < self.batch_size:
-            return
-
-        state, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
-
-        x,jnt_err,action = crit_preprocessing(state,action)
-
-        self.actor_optim.zero_grad()
-        action_ = self.actor.forward(x,jnt_err)
-        actor_loss = F.mse_loss(action_, action)
-        actor_loss.backward()
-        self.actor_optim.step()
-
-        output = actor_loss.detach().cpu().numpy()
-        return output
-
-    def train_critic_PID(self):
-
-        state, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
-
-        new_x,new_jnt_err = act_preprocessing(new_state)
-        x,jnt_err,a = crit_preprocessing(state,action)
-
-        self.actor.eval()
-        self.critic.eval()
-        self.target_critic.eval()
-
-        new_action = self.actor(new_x,new_jnt_err)
-        critic_value_ = self.target_critic(new_x,new_jnt_err,new_action)
-
-        target=[]
-        for j in range(self.batch_size):
-            target.append(reward[j] + self.gamma*critic_value_[j]*(1-done[j]))
-        target = torch.vstack(target)
-
-        self.critic_optim.zero_grad()
-        critic_value = self.critic.forward(x,jnt_err,a)
-        critic_loss = F.mse_loss(critic_value, target)
-        critic_loss.backward()
-        self.critic_optim.step()
-       
-        self.update_network_params()
-        self.critic.train()
-        return critic_loss.item()
-
-    def save_models(self):
+    def save_models(self, chckptn=False):
         print('saving models')
-        self.actor.save_checkpoint()
-        self.critic.save_checkpoint()
-        self.target_actor.save_checkpoint()
-        self.target_critic.save_checkpoint()
+        if chckptn:
+            str1 = save_as + self.actor.name
+            str2 = save_as + self.critic.name
+            str3 = save_as + self.target_actor.name
+            str4 = save_as + self.target_critic.name
+        else:
+            str1,str2,str3,str4 = None,None,None,None
+        self.actor.save_checkpoint(save_as=str1)
+        self.critic.save_checkpoint(save_as=str2)
+        self.target_actor.save_checkpoint(save_as=str3)
+        self.target_critic.save_checkpoint(save_as=str4)
 
     def load_models(self):
         print('loading models')

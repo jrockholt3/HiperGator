@@ -4,11 +4,11 @@ from numba.typed import Dict
 from numba.core import types
 from env_config import dt, t_limit, thres, vel_thres, prox_thres, min_prox, vel_prox, tau_max, damping, P, D, jnt_vel_max, j_max
 from optimized_functions import calc_jnt_err, PDControl, angle_calc
-from optimized_functions_5L import nxt_state, proximity
-from support_classes import vertex
+from optimized_functions_5L import nxt_state, proximity, calc_ev_dot, reward_func
+# from support_classes import vertex
 from Object_v2 import rand_object
-from Robot_5link import forward, reverse, S, l, a, shift, get_coords
-from spare_tnsr_replay_buffer import ReplayBuffer
+from Robot_5link import forward, reverse, S, l, a, shift, get_coords, calc_eef_vel
+from sparse_tnsr_replay_buffer import ReplayBuffer
 
 rng = np.random.default_rng()
 
@@ -109,7 +109,7 @@ def gen_obs_pos(obj_list):
         value_type=types.float64[:,:]
     )
     temp = np.ones((3,len(obj_list)))
-    while t < time_steps:
+    while t <= time_steps:
         i = 0
         for o in obj_list:
             center = o.curr_pos
@@ -172,7 +172,7 @@ class RobotEnv(object):
             self.goal = th2
 
         self.th = self.start
-        self.w = np.zeros_like(self.start, dtype=float)
+        self.w = np.zeros_like(self.start,dtype=np.float64)
         self.t_step = 0
         self.t_sum = 0
         self.done = False
@@ -181,7 +181,11 @@ class RobotEnv(object):
         self.batch_size = batch_size
         self.info = {}
         self.jnt_err = calc_jnt_err(self.th, self.goal)
-        self.dedt = np.zeros_like(self.jnt_err, dtype=float)
+        self.dedt = np.zeros_like(self.jnt_err)
+        weights = rng.random(3)
+        weights = np.round(weights/np.linalg.norm(weights),2)
+        self.weights = weights
+        self.info["converged"] = False
 
         if has_objects:
             objs = []
@@ -193,7 +197,7 @@ class RobotEnv(object):
                 prox = np.inf 
                 for j in range(30):
                     pos_j = o.path(j)
-                    prox_i = proximity(pos_j, self.start, a, l,S)
+                    prox_i,zmin = proximity(pos_j, self.start, a, l,S)
                     if prox_i < prox:
                         prox = prox_i
                 if prox > min_prox:
@@ -203,31 +207,31 @@ class RobotEnv(object):
         else:
             self.objs = []
 
-    def env_replay(self, start_v:vertex, th_goal, obs_dict, steps):
-        if not isinstance(th_goal, np.ndarray):
-            th_goal = np.array(th_goal,dtype=np.float64)
-        th = np.array(start_v.th,dtype=np.float64)
-        w = start_v.w
-        w = w.astype(np.float64)
-        t_start = start_v.t
-        t_start = int(t_start)
-        # th, w, score, t, flag = env_replay(th,w,t_start, th_goal, obs_dict, steps)
-        # self.th = th
-        # self.w = w
-        # self.jnt_err = calc_jnt_err(th, self.goal)
-        # self.dedt = -1*w
-        return env_replay(th,w,t_start, th_goal, obs_dict, steps,S,a,l)
+    # def env_replay(self, start_v:vertex, th_goal, obs_dict, steps):
+    #     if not isinstance(th_goal, np.ndarray):
+    #         th_goal = np.array(th_goal,dtype=np.float64)
+    #     th = np.array(start_v.th,dtype=np.float64)
+    #     w = start_v.w
+    #     w = w.astype(np.float64)
+    #     t_start = start_v.t
+    #     t_start = int(t_start)
+    #     # th, w, score, t, flag = env_replay(th,w,t_start, th_goal, obs_dict, steps)
+    #     # self.th = th
+    #     # self.w = w
+    #     # self.jnt_err = calc_jnt_err(th, self.goal)
+    #     # self.dedt = -1*w
+    #     return env_replay(th,w,t_start, th_goal, obs_dict, steps,S,a,l)
 
     def reward(self, eef_vel, prox):
         return -1
     
     def step(self, action, use_PID=False, eval=False):  
-        objs_arr = np.zeros((3,len(self.objs)), dtype=float)
-        nxt_objs_arr = np.zeros_like(objs_arr, dtype=float)
+        objs_arr = np.zeros((3,len(self.objs)))
+        nxt_objs_arr = np.zeros_like(objs_arr)
         for i in range(len(self.objs)):
             o = self.objs[i]
             objs_arr[:,i] = o.path(self.t_step)
-            nxt_objs_arr = o.path(self.t_step+1)
+            nxt_objs_arr[:,i] = o.path(self.t_step+1)
         
         if use_PID:
             err = self.jnt_err
@@ -247,7 +251,9 @@ class RobotEnv(object):
         prox = package[-1,0]
 
         # need to add a eef vel function
-        reward = self.reward(np.zeros(3), prox)
+        eef_vel,eef = calc_eef_vel(nxt_th,nxt_w)
+        v_dot = calc_ev_dot(eef,eef_vel,nxt_objs_arr)
+        reward = reward_func(prox, v_dot, self.weights)
         
         self.t_step += 1
         err = calc_jnt_err(nxt_th, self.goal)
@@ -255,14 +261,14 @@ class RobotEnv(object):
             done = True
         elif np.all(abs(err) < thres) and np.all(abs(nxt_w) < vel_thres):
             done = True
-            # print('reached goal')
+            self.info["converged"] = True 
             reward += 10
         else:
             done = False
 
         self.th = nxt_th
         self.w = nxt_w
-        self.jnt_err = calc_jnt_err(self.th, self.goal)
+        self.jnt_err = err 
         self.dedt = -1*self.w
         coords,feats = [],[]
         if not eval:
@@ -303,7 +309,7 @@ class RobotEnv(object):
         self.memory.clear()
 
     def store_transition(self,state, action, reward, new_state,done,t_step):
-        self.memory.store_transition(state, action, reward,new_state,done,t_step)
+        self.memory.store_transition(state, self.weights, action, reward,new_state,done,t_step)
 
     def sample_memory(self):
         return self.memory.sample_buffer(self.batch_size)

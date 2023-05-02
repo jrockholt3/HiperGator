@@ -32,7 +32,7 @@ def get_transforms(th, S, a, l):
     T_4F = T_3F@T_ji(th[3], a[2], l[2], S[3])
     T_5F = T_4F@T_ji(th[4], a[3], l[3], S[4])
 
-    T_arr = np.zeros((5,4,4), dtype=float)
+    T_arr = np.zeros((5,4,4))
     T_arr[0,:,:] = T1F
     T_arr[1,:,:] = T_2F[:,:]
     T_arr[2,:,:] = T_3F[:,:]
@@ -44,15 +44,15 @@ def get_transforms(th, S, a, l):
 def make_plot(th, S, a, l):
     th = th - shift
     # T_arr = get_transforms(th, S, a, l)
-    O_i = np.array([0,0,0,1], dtype=float)
-    Ptool_5 = np.array([l[-1],0,0,1], dtype=float)
+    O_i = np.array([0,0,0,1])
+    Ptool_5 = np.array([l[-1],0,0,1])
     TF = T_1F(th[0], S[0])
     T_21 = T_ji(th[1], a[0], l[0], S[1])
     T_32 = T_ji(th[2], a[1], l[1], S[2])
     T_43 = T_ji(th[3], a[2], l[2], S[3])
     T_54 = T_ji(th[4], a[3], l[3], S[4])
 
-    points = np.zeros((5,4),dtype=float)
+    points = np.zeros((5,4))
     points[0,:] = np.zeros(4)
     points[1,:] = TF@T_21@O_i
     points[2,:] = TF@T_21@T_32@O_i
@@ -77,8 +77,8 @@ def make_plot(th, S, a, l):
     plt.show()
     return points 
 
-
-def forward(th, S, a, l, make_plot=False):
+@njit(nogil=True)
+def forward(th, S, a, l): #, make_plot=False):
     th = th - shift
     TF = T_1F(th[0], S[0])
     T_21 = T_ji(th[1], a[0], l[0], S[1])
@@ -86,23 +86,29 @@ def forward(th, S, a, l, make_plot=False):
     T_43 = T_ji(th[3], a[2], l[2], S[3])
     T_54 = T_ji(th[4], a[3], l[3], S[4])
     Ptool_5 = np.array([l[-1],0,0,1])
-    O = np.array([0,0,0,1])
-    # F1 = TF@O
-    # F2 = TF@T_21@O
-    # F3 = TF@T_21@T_32@O
-    # F4 = TF@T_21@T_32@T_43@O
+    O = np.array([0.0,0.0,0.0,1.0])
     T_5f = TF@T_21@T_32@T_43@T_54
     F5 = T_5f@O
     eef = T_5f@Ptool_5
     u = (eef - F5)/np.linalg.norm(eef - F5)
     return np.vstack((eef[0:3],u[0:3]))
 
+@njit(nogil=True)
+def calc_eef_vel(th,w):
+    eef1 = forward(th,S,a,l)
+    eef1 = eef1[0,:]
+    th2 = th + w*.0001
+    eef2 = forward(th2,S,a,l)
+    eef2 = eef2[0,:]
+    eef_vel = (eef2 - eef1)/.0001
+    return eef_vel, eef1
+
 @njit((float64[:,:])(float64[:],float64[:],float64[:],float64[:]), nogil=True)
 def points(th,S,a,l):
     T_arr = get_transforms(th,S,a,l)
     O_i = np.array([0.0,0.0,0.0,1.0])#,dtype=float)
     Ptool_5 = np.array([l[-1],0.0,0.0,1.0])#,dtype=float)
-    points = np.zeros((4,5),dtype=float)
+    points = np.zeros((4,5))
     points[:,0] = np.array([0.0,0.0,0.0,1.0])#,dtype=float)
     points[:,1] = np.array([0.0,0.0,S[0],1.0])#,dtype=float)
     points[:,2] = T_arr[2,:,:]@O_i
@@ -136,7 +142,7 @@ def reverse(p, u, S, a, l, make_plot=False):
     xy = np.sqrt(x25**2 + y25**2)
     aph = np.arctan2(z25, xy) 
     # th2
-    # apply cosine law                  /\B
+    # apply cosine law                 /B\
     # a^2 = b^2 + c^2 - 2*b*c*cos(A) A/___\C
     # O2_f@A, O3_f@B, O5_f@C
     a_,c = S[3],l[1] 

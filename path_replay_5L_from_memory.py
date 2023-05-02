@@ -16,12 +16,9 @@ import Robot_5link
 from Robot_5link import S, a, l 
 from env_config import *
 from env_config import *
-from utils import stack_arrays
-from rrt_5link import RRT_star
-from support_classes import vertex
 from trajectory import Trajectory
 from optimized_functions import calc_jnt_err
-from spare_tnsr_replay_buffer import ReplayBuffer
+from sparse_tnsr_replay_buffer import ReplayBuffer
 
 lims = Robot_5link.limits
 
