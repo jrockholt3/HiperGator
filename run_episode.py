@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings('ignore')
 import torch 
 import torch.multiprocessing as mp
 from Robot_5link_Env import RobotEnv, env_replay
@@ -10,9 +12,9 @@ from torch.distributions import MultivariateNormal
 from env_config import *
 from optimized_functions import calc_jnt_err, PDControl
 from optimized_functions_5L import create_store_state
-from Networks import Actor
+from Networks import SupervisedActor
 
-def run_episode(env: RobotEnv, actor:Actor):
+def run_episode(env: RobotEnv, actor):
     done = False
     state = env.get_state()
     noise = .1*tau_max
@@ -30,7 +32,7 @@ def run_episode(env: RobotEnv, actor:Actor):
         x, jnt_err, jnt_dedt, w = act_preprocessing(state_, env.weights,single_value=True,device=actor.device)
         with torch.no_grad():
             action = actor.forward(x, jnt_err, jnt_dedt,w)
-            action += torch.normal(torch.zeros_like(action).to(actor.device),noise)
+            # action += torch.normal(torch.zeros_like(action).to(actor.device),noise)
         t = env.t_step
         new_state, reward, done, info = env.step(action,use_PID=use_PID)
         new_store_state = create_store_state(env)
@@ -51,6 +53,11 @@ def run_episode(env: RobotEnv, actor:Actor):
     print('finished, actor_steps',actor_steps,'PID_steps', pid_steps)
     return env, score
 
-actor = Actor(name='temp')
-actor.load(load_as='chckptn_supervised_actor')
-env = RobotEnv()
+from path_replay_5L_from_memory import replay_from_memory
+actor = SupervisedActor(name='temp',device='cpu')
+actor.load_checkpoint(load_as='chckptn_supervised_actor_0509')
+env = RobotEnv(num_obj=3)
+env, score = run_episode(env,actor)
+print('score', score, 'weights', env.weights)
+replay_from_memory(env)
+

@@ -95,8 +95,8 @@ def obj_get_coords(curr_pos, t): #, radius, workspace_limits, res,label):
 
 
 class rand_object():
-    def __init__(self,object_radius=obj_radius, dt=.01, res=0.01, max_obj_vel = .6, \
-                label=obj_label,workspace_limits=np.array([[-.75,.75],[-.75,.75],[0,1.05]])):
+    def __init__(self, q=None, object_radius=obj_radius, dt=dt, res=0.01, max_obj_vel = 0.5, \
+                label=obj_label,workspace_limits=workspace_limits):
         self.radius = object_radius
         self.res = res
         self.t = 0 # an interger defining the time step 
@@ -105,17 +105,19 @@ class rand_object():
 
         # init the object's location at a random (x,y) within the workspace
         self.workspace_limits = workspace_limits
-        rho = rng.uniform(.4,.8) * self.workspace_limits[0,1]        
-        phi = 2*np.pi*rng.random()
+        if not isinstance(q,int):
+            q = rng.choice([1,2,3,4])
+        rho = rng.uniform(.6,.9) * self.workspace_limits[0,1]        
+        phi = np.pi/2*rng.random() + np.pi/2*(q-1)
         temp = np.array([-1.0, 1.0])
         phi2 = rng.choice(temp) * np.pi/2 * rng.uniform(0.5, 1.0)
         # setti
-        z_max = 0.8*workspace_limits[2,1]
+        z_max = 0.7*workspace_limits[2,1]
         z_min = 0.1*workspace_limits[2,1]
-        self.start = np.array([rho*m.cos(phi), rho*m.sin(phi), rng.uniform(z_min, z_max)])
+        self.start = np.array([rho*m.cos(phi), rho*m.sin(phi), rng.uniform(z_min, z_max)])                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
         self.goal = np.array([rho*m.cos(phi+phi2), rho*m.sin(phi+phi2), rng.uniform(z_min, z_max)])
         v_vec = (self.goal - self.start) / np.linalg.norm((self.goal - self.start))
-        self.vel = (.2*np.random.rand()+.8)*max_obj_vel*v_vec
+        self.vel = (.5*np.random.rand()+.5)*max_obj_vel*v_vec
         self.tf = np.linalg.norm(self.goal - self.start) / np.linalg.norm(self.vel)
         self.original_tf = self.tf
         self.curr_pos = self.start

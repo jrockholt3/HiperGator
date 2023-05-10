@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings('ignore')
 from Robot_5link_Env import RobotEnv, env_replay
 from Robot_5link import get_coords, S, a, l
 from sparse_tnsr_replay_buffer import ReplayBuffer
@@ -8,6 +10,8 @@ from trajectory import Trajectory_v2
 from optimized_functions import calc_jnt_err, PDControl
 from optimized_functions_5L import create_store_state
 from env_config import thres as r_thres
+from path_replay_5L_from_memory import replay_from_memory
+from time import time
 
 def run_rrt(env:RobotEnv):
     t_list = []
@@ -16,14 +20,16 @@ def run_rrt(env:RobotEnv):
     while len(t_list)==0 and k < max_iter:
         start = tuple(env.start)
         goal = tuple(env.goal)
-        steps = 25
-        thres = np.sqrt(5*.003)**2 * (steps/25)
-        n = 15
-        r = np.linalg.norm(np.ones(5)*jnt_vel_max/5)
+        steps = 15
+        thres = np.sqrt(5*.03**2) #* (steps/25)
+        n = 20
+        r = np.linalg.norm(np.ones(5)*jnt_vel_max/10)
         d = np.linalg.norm(jnt_vel_max*dt*steps*np.ones(5))
         max_samples = 4000
+        # print('starting rrt')
         rrt = RRT_star(start,goal,max_samples,r,d,thres,n,steps,env)
         t_list,traj = rrt.rrt_search()
+        # rrt.plot_graph()
         # obs = rrt.obs_dict
         k+=1
 
@@ -56,6 +62,10 @@ def run_rrt(env:RobotEnv):
             state = nxt_state
             score += reward
             th, w = env.th, env.w
+            if done: 
+                i = tau_list.shape[0] + 1
+            # elif np.linalg.norm(env.jnt_err) < r:
+                # i = tau_list.shape[0] + 1
         # print("RRT steps", tau_list.shape[0])
         # if done:
         #     print("ended with RRT")
@@ -68,12 +78,12 @@ def run_rrt(env:RobotEnv):
             nxt_state, reward, done, info = env.step(tau,use_PID=True,eval=True)
             nxt_store_state = create_store_state(env)
             action = info['action']
-            converged = info['converged']
+            # converged = info['converged']
             env.store_transition(store_state, action, reward, nxt_store_state, done, t)
             store_state = nxt_store_state
             score += reward
             PD_steps += 1
-        # print("steps with PD:", PD_steps)
+        print("steps with RRT", len(tau_list), "steps with PD:", PD_steps, 'final jnt_err', env.jnt_err)
     else:
         score = 0
         converged = False
@@ -81,3 +91,23 @@ def run_rrt(env:RobotEnv):
     #     while not done:
 
     return env, score, converged
+
+
+# env1 = RobotEnv(num_obj=4)#,start=np.array([np.pi/4, np.pi/4, np.pi/4, np.pi/4, np.pi/4]), goal=np.array([0.0,0.0,0.0,0.0,0.0]))
+# env2 = env1.copy()
+# env3 = env1.copy()
+# print('limits', np.round(180*jnt_max/np.pi,2))
+# print('goal1', np.round(180*env1.goal/np.pi,2), 'start1', np.round(180*env1.start/np.pi,2))
+# # env1.weights = np.array([.99, .1, .1])
+# t1 = time()
+# env1, score1,converged1 = run_rrt(env1)
+# print('run time is ', time()-t1)
+# # env2.weights = np.array([.1, .99, .1])
+# # env2,score2, converged2 = run_rrt(env2)
+# # env3.weights = np.array([.1,.1,.99])
+# # env3,score3,converged3 = run_rrt(env3)
+# # print('score1', score1, converged1, 'score2', score2,converged2, 'score3', score3, converged3)
+# print('converged', converged1)
+# replay_from_memory(env1)
+# # replay_from_memory(env2)
+# # replay_from_memory(env3)

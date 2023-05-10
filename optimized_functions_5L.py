@@ -24,12 +24,13 @@ def Rot_Z(th):
                   [0.0, 0.0, 0.0, 1.0]])
     return T.T
 
+# nb.types.UniTuple(float64,2)
 @njit(nb.types.UniTuple(float64,2)(float64[:],float64[:],float64[:],float64[:],float64[:]), nogil=True)
 def proximity(obj_pos, th, a, l, S):
     '''
     input 
         obj_pos = [x,y,z] of obj
-        '''
+    '''
     step_size = .05 # step size along robot arm in meters
     point_arr = points(th,S,a,l)
     O2 = point_arr[0:3,1]
@@ -43,22 +44,30 @@ def proximity(obj_pos, th, a, l, S):
     u5t = np.linalg.norm(Ptool_f-O5)
     u5t_f = (Ptool_f - O5)/u5t
     max_size = int(np.ceil((u23+u35+u5t)/step_size))
-    proxs = np.ones(max_size) * np.inf
+    p_min = 1*np.inf
+    r_min = 1*np.inf
     s = 0.0
     for i in range(max_size):
         if s < u23:
             u_i = s*u23_f + O2
+            r_i = np.inf
         elif s < u23 + u35:
             u_i = u35_f * (s - u23) + O3
+            r_i = np.linalg.norm(u_i)
         elif s <= u23 + u35 + u5t:
             u_i = u5t_f * (s - u23-u35) + O5
+            r_i = np.linalg.norm(u_i)
             
         prox_i = np.linalg.norm(obj_pos - u_i)
-        proxs[i] = prox_i
+        if prox_i < p_min:
+            p_min = prox_i
+        if r_i < r_min:
+            r_min = r_i
         s += step_size
-    prox = np.min(proxs)
-    zmin = min([O3[2],O5[2],Ptool_f[2]])
-    return prox, zmin
+    z_min = min([O3[2],O5[2],Ptool_f[2]])
+    r_prox = r_min - .28 + min_prox 
+    env_prox = min([p_min, z_min, r_prox])
+    return env_prox, p_min
 
 
 @njit(nogil=True)
@@ -75,16 +84,17 @@ def calc_ev_dot(eef,eef_vel,obj_arr):
 
 @njit(nogil=True)
 def reward_func(prox, ev_dot, w):
-    return -1*w[0] - w[1]*(1-np.exp(-prox**2/0.5**2)) - w[2]*(1-np.exp(-ev_dot**2))
+    return -1*w[0] + w[1]*(np.exp(-prox**2/0.5**2) - 1) + w[2]*(np.exp(-ev_dot**2) - 1)
 
 @njit(nogil=True) # (float64[:])(float64,float64),
-def calc_clip_vel(prox, zmin):
-    prox_clip = np.ones(5) * jnt_vel_max * (1 - np.exp(-(prox-min_prox)**2/(.659*(vel_prox-min_prox)**2)))
-    z_clip = np.ones(5) * jnt_vel_max * (1 - np.exp(-(zmin-.14)**2/(1.61*(zmin-.34))**2))
+def calc_clip_vel(prox):
+    prox_clip = np.ones(5) * jnt_vel_max * (1 - np.exp(-(prox-min_prox)**2/(.659*(vel_prox-min_prox))**2))
+    z_clip = np.ones(5) * jnt_vel_max #* (1 - np.exp(-(zmin-.14)**2/(1.61*(zmin-.34))**2))
     z_clip[0] = jnt_vel_max
     clip_vec = np.ones(5)
     for i in range(5):
-        clip_vec[i] = min(clip_vec[i], prox_clip[i])
+        clip_vec[i] = min(z_clip[i], prox_clip[i])
+    # print('prox',prox,'prox_clip',prox_clip)
     return clip_vec
 
 # @njit((float64[:,:])(float64[:,:],float64[:],float64[:],float64[:],float64[:],float64[:],float64[:]),nogil=True)
@@ -94,11 +104,14 @@ def nxt_state(obj_pos, th, w, tau, a, l, S):
     obj_pos = [pos1, pos2,...]
     '''
     prox_arr = np.zeros(obj_pos.shape[1])
+    obj_prox_arr = np.zeros(obj_pos.shape[1])
     for i in range(0, obj_pos.shape[1]):
-        prox_arr[i],zmin = proximity(obj_pos[:,i], th, a, l, S)
+        prox_arr[i],obj_prox_arr[i] = proximity(obj_pos[:,i], th, a, l, S)
     prox = np.min(prox_arr)
+    obj_prox = np.min(obj_prox_arr)
 
-    vel_clip = calc_clip_vel(prox,zmin)
+    vel_clip = calc_clip_vel(prox)
+    # print('prox',prox,'vel_clip',vel_clip)
 
     if prox <= min_prox:
         paused = True
@@ -129,5 +142,5 @@ def nxt_state(obj_pos, th, w, tau, a, l, S):
     for i in range(0,nxt_w.shape[0]):
         package[i,1] = nxt_w[i]
 
-    package[-1,0] = prox
+    package[-1,0] = obj_prox
     return package

@@ -5,7 +5,7 @@ from torch.optim import Adam
 import numpy as np
 import MinkowskiEngine as ME
 from sparse_tnsr_replay_buffer import ReplayBuffer
-from Networks import Actor as Actor, Critic
+from Networks import Actor, Critic, SupervisedActor
 # from Reduced_Networks import Actor, Critic
 import pickle
 import gc 
@@ -48,17 +48,16 @@ class Agent():
         self.target_actor = Actor(1,n_actions,D=4,name='targ_'+actor_name)
         self.target_critic = Critic(1,n_actions,D=4,name='targ_'+critic_name)
 
-        # loads the convolutional layers from a pre-trained critic
+        # loads the convolutional layers from a pre-trained policy
         if transfer:
-            temp = Actor(name='chckptn_supervised_actor')
-            temp.load_checkpoint(load_as='chckptn_supervised_actor')
-            # load every layer for critic
+            temp = SupervisedActor(name='chckptn_supervised_actor_0509')
+            temp.load_checkpoint()
+
             self.critic.conv1.load_state_dict(temp.conv1.state_dict())
             for name,param in self.critic.named_parameters():
                 if 'conv1' in name:
                     param.requires_grad = False
 
-            # load last layers from PID_train
             self.actor.conv1.load_state_dict(temp.conv1.state_dict())
             for name,param in self.actor.named_parameters():
                 if 'conv1' in name:
@@ -115,22 +114,27 @@ class Agent():
         self.memory.store_transition(state,weights,action,reward,new_state,done,t)
 
     def learn(self,batch=None,use_batch=False,use_data=False,data=None):
-        if self.memory.mem_cntr < self.batch_size:
-            return 0.0
         if use_data:
-            state, action, weight, reward, new_state, done = data[0],data[1],data[3],data[4],data[5]
+            state, weight, action, reward, new_state, done = data[0],data[1],data[2],data[3],data[4],data[5]
+            batch_size = done.shape[0]
         elif use_batch:
-            state, action, weight, reward, new_state, done = self.memory.sample_buffer(self.batch_size,use_batch=True,batch=batch)
+            if self.memory.mem_cntr < self.batch_size:
+                return 0.0
+            state, weight, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size,use_batch=True,batch=batch)
+            batch_size = self.batch_size
         else:
-            state, action, weight, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
-
+            if self.memory.mem_cntr < self.batch_size:
+                return 0.0
+            state, weight, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
+            batch_size = self.batch_size
+        
         self.target_actor.eval()
         self.target_critic.eval()
         self.critic.train()
         self.actor.train()
 
-        new_x, new_jnt_err, new_jnt_dedt, w = act_preprocessing(new_state, weights)
-        x, jnt_err, jnt_dedt, w, a = crit_preprocessing(state, weights, action)
+        new_x, new_jnt_err, new_jnt_dedt, w = act_preprocessing(new_state, weight)
+        x, jnt_err, jnt_dedt, w, a = crit_preprocessing(state, weight, action)
 
         # target actions
         target_actions = self.target_actor.forward(new_x,new_jnt_err, new_jnt_dedt,w)
@@ -139,21 +143,21 @@ class Agent():
         
 
         target=[]
-        for j in range(self.batch_size):
+        for j in range(batch_size):
             target.append(reward[j] + self.gamma*critic_value_[j]*(1-done[j]))
         target = torch.vstack(target)
         
         # update critic 
         self.critic_optim.zero_grad()
-        critic_value = self.critic.forward(x,jnt_pos,jnt_goal,w,a)
+        critic_value = self.critic.forward(x,jnt_err,jnt_dedt,w,a)
         # critic_loss = F.l1_loss(critic_value, target)
         critic_loss = F.mse_loss(critic_value, target)
         critic_loss.backward()
         self.critic_optim.step()
 
         # update actor
-        mu = self.actor.forward(x,jnt_pos,jnt_goal,w)
-        actor_loss = -1*self.critic.forward(x,jnt_pos,jnt_goal,w,mu).mean()
+        mu = self.actor.forward(x,jnt_err,jnt_dedt,w)
+        actor_loss = -1*self.critic.forward(x,jnt_err,jnt_dedt,w,mu).mean()
         # print('actor_loss',actor_loss)
         self.actor_optim.zero_grad()
         actor_loss.backward()
@@ -168,10 +172,10 @@ class Agent():
     def save_models(self, chckptn=False):
         print('saving models')
         if chckptn:
-            str1 = save_as + self.actor.name
-            str2 = save_as + self.critic.name
-            str3 = save_as + self.target_actor.name
-            str4 = save_as + self.target_critic.name
+            str1 = 'chckptn_' + self.actor.name
+            str2 = 'chckptn_' + self.critic.name
+            str3 = 'chckptn_'  + self.target_actor.name
+            str4 = 'chckptn_'  + self.target_critic.name
         else:
             str1,str2,str3,str4 = None,None,None,None
         self.actor.save_checkpoint(save_as=str1)

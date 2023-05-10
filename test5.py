@@ -2,7 +2,7 @@ import MinkowskiEngine as ME
 import torch 
 import numpy as np
 
-td,xd,yd,zd = 6,131,131,99
+td,xd,yd,zd = 6,157,157,113
 
 coords = np.zeros((td*xd*yd*zd,4))
 m = 0
@@ -26,7 +26,7 @@ s2 = (2,2,2,2)
 k3 = (2,2,2,2)
 s3 = (2,2,2,2) 
 k4 = (1,17,17,13)
-s4 = (1,17,17,13)
+s4 = (1,2,2,2)
 in_feat = 1
 D = 4
 kg1= ME.KernelGenerator(
@@ -50,7 +50,7 @@ kg3= ME.KernelGenerator(
 kg4= ME.KernelGenerator(
     kernel_size = k4,
     stride = s4,
-    region_type=ME.RegionType.HYPER_CUBE,
+    region_type=ME.RegionType.HYPER_CROSS,
     dimension=4
 )
 conv1 = ME.MinkowskiConvolution(in_channels=1,
@@ -80,6 +80,7 @@ conv4 = ME.MinkowskiConvolution(in_channels=1,
                 stride=s4,
                 bias=True,
                 dimension=D).double()
+maxpool = ME.MinkowskiGlobalMaxPooling()
 
 print('input', x.coordinates.shape, x.features.shape)
 x = conv1(x)
@@ -90,5 +91,7 @@ x = conv3(x)
 print('conv3', x.coordinates.shape, x.features.shape)
 x = conv4(x)
 print('conv4', x.coordinates.shape, x.features.shape)
+x = maxpool(x)
+print('after pool', x.coordinates.shape, x.features.shape)
 x = x.dense()
 print('dense',x[0].shape)

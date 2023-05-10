@@ -3,13 +3,14 @@ from numpy.linalg import norm as norm
 from numba import njit, float64
 from optimized_functions import T_1F, T_ji
 from Object_v2 import Cylinder, cyl_get_coords
+from env_config import *
 
-shift = np.array([[0,0],[np.pi/2, np.pi/2],[np.pi/2, np.pi/2],[0,0],[-np.pi/2,-np.pi/2]])
+# shift = np.array([[0,0],[np.pi/2, np.pi/2],[np.pi/2, np.pi/2],[0,0],[-np.pi/2,-np.pi/2]])
 
 # S = [S1, S2, S3, S4, S5] offsets
-S = np.array([.3, 0, 0, .3, 0])
+S = np.array([.135+.202, 0, 0, .2675, 0])
 # l = [l12, l23, l34, l45, l56] link lengths
-l = np.array([0, .3, 0, 0, .12])
+l = np.array([0, .2015, 0, 0, .175+.14])
 # a = [a12, a23, a34, a45, a56]
 a = np.array([np.pi/2, 0, np.pi/2, -np.pi/2, 0])
 r = np.sum(S[1:]) + np.sum(l)
@@ -118,6 +119,14 @@ def points(th,S,a,l):
     return points 
 
 def reverse(p, u, S, a, l, make_plot=False):
+    '''
+    inputs:
+        p : tool point of the eef asb fixed frame
+        u : unit vect describing the orientation of the eef, parallel
+            w/ a56
+    outputs:
+        th_arr : two joint angle solutions satisfying the reverse analysis
+    '''
     # th1 
     # two solutions but only interested in the first one
     a56 = l[-1]

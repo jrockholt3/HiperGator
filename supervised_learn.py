@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 import numpy as np
-from Networks import Actor
+from Networks import SupervisedActor
 from utils import crit_preprocessing 
 from sparse_tnsr_replay_buffer import ReplayBuffer
 import pickle
@@ -13,11 +13,11 @@ from time import time, sleep
 from multiprocessing import Pipe, Process, Queue
 
 batch_size = 512
-epochs = 100
+epochs = 50
 num_workers = 6
 q_size = 15
 
-actor = Actor(name='supervised_actor')
+actor = SupervisedActor(name='supervised_actor_0509')
 optimizer = Adam(params=actor.parameters())
 
 train_buffer = ReplayBuffer(max_size=int(1e6), jnt_d=5, time_d=6,file='train_data')
@@ -48,7 +48,7 @@ def data_loader(buffer,eval_buffer):
             except:
                 sleep(.1)
         else:
-            if i%100==0: print('idle',i)
+            # if i%100==0: print('idle',i)
             i+=1
             if i > int(max_iter): # stop runing after 10 seconds 
                 run = False
@@ -56,8 +56,8 @@ def data_loader(buffer,eval_buffer):
             sleep(wait_time)
 
 def save_files(loss_hist,val_hist):
-    loss_file = "loss_hist.pkl"
-    val_file = "val_hist.pkl"
+    loss_file = "loss_hist_0508.pkl"
+    val_file = "val_hist_0508.pkl"
     file = open(loss_file,'wb')
     pickle.dump(loss_hist,file)
     file = open(val_file,'wb')
@@ -93,7 +93,7 @@ try:
             temp_loop = 0
             # t = time()
             while q.empty():
-                print('recovering')
+                # print('recovering')
                 sleep(5)
             stuff = q.get()
             states,actions,weights = stuff[0],stuff[1],stuff[2]
@@ -118,7 +118,7 @@ try:
             with torch.no_grad():
                 temp_loop = 0
                 while q_val.empty():
-                    print('recovering')
+                    # print('recovering')
                     sleep(5)
                 stuff = q_val.get()
                 states,actions,weights = stuff[0],stuff[1],stuff[2]

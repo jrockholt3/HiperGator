@@ -1,123 +1,230 @@
+import warnings
+import torch 
+warnings.filterwarnings("ignore")
+# from sparse_tnsr_replay_buffer import ReplayBuffer
 import numpy as np
-import torch
-from Agent import Agent
+import pickle 
 from Robot_5link_Env import RobotEnv
-from env_config import tau_max
-from optimized_functions import calc_jnt_err
-from utils import stack_arrays, create_stack
-from time import time 
-import pickle
-from pathos.threading import ThreadPool
-from pathos.parallel import ParallelPool
-from Parallel_Robot_Env import run_episode, run_rrt
-from Networks import Actor
-import logging
-logger = logging.getLogger("numba")
-logger.setLevel(logging.ERROR)
+from Agent import Agent 
+from Networks import Actor, SupervisedActor
+from multiprocessing import Process, Pipe, Queue
+from sparse_tnsr_replay_buffer import ReplayBuffer
+from time import time,sleep
+from utils import stack_arrays, act_preprocessing
+from env_config import * 
+from optimized_functions_5L import create_store_state
 
-
-score_hist_file = 'score_hist_0308'
-loss_hist_file = 'loss_hist_0308'
-act_name = 'actor_0413'
-crit_name = 'critic_0413'
-alpha = .001 # actor lr
-beta = .002 # critic lr
-gamma = .99
-top_only = False
-transfer = False
-load_check_ptn = False
-load_memory = False
-has_objs = True
-num_obj = 4
-top_only = False
-epochs = 5 # number of epochs to train over the collected data per episode
+agent = Agent(transfer=True,actor_name="actor_0510",critic_name="critic_0510")
+loss_file = "crit_loss_hist_0510.pkl"
+score_file = "score_hist_0510.pkl"
+agent.memory = None 
+batch_size = 128
 num_workers = 5
-episodes = 10 
-best_score = -np.inf 
-n = 30 # number of episodes to calculate the average score
-batch_size = 128 # batch size
+num_rrt = 1
+n_batch = 100
+n = 5
+q_size = 5
+epochs = int(1000)
+rrt_guys = []
+workers = []
+data_q = Queue(maxsize=q_size)
+rrt_q = Queue(maxsize=q_size)
 
-agent = Agent(alpha=alpha,beta=beta,batch_size=batch_size,max_size=int(1e6),
-                noise=.01*tau_max,e=.1,enoise=.01*tau_max,
-                actor_name=act_name, critic_name=crit_name)
-rng = np.random.default_rng()
+def cpu_worker(recv_dict, send_score, init_dict):
+    print('started worker')
+    # from Networks import Actor
+    # from sparse_tnsr_replay_buffer import ReplayBuffer
+    # from Robot_5link_Env import RobotEnv
+    actor = Actor(name="cpu_worker",device='cpu')
+    actor.load_state_dict(init_dict)
+    for name,param in actor.named_parameters():
+        param.requires_grad = False
+    buffer = ReplayBuffer(max_size=int(1e4))
+    noise = .1*tau_max
+    radius = np.linalg.norm(np.ones(5)*jnt_vel_max/5)
+    run = True 
+    print('starting loop')
+    while run:
+        env = RobotEnv()
+        done = False
+        state = env.get_state()
+        t = 0
+        coord_list = [state[0]]
+        feat_list = [state[1]]
+        score = 0
+        store_state = create_store_state(env)
+        use_PID=False
+        while not done:
+            state_ = (np.vstack(coord_list), np.vstack(feat_list), state[2], state[3])
+            x, jnt_err, jnt_dedt, w = act_preprocessing(state_, env.weights,single_value=True,device=actor.device)
+            with torch.no_grad():
+                action = actor.forward(x, jnt_err, jnt_dedt,w)
+                action += torch.normal(torch.zeros_like(action).to(actor.device),noise)
+            t = env.t_step
+            new_state, reward, done, info = env.step(action,use_PID=use_PID)
+            new_store_state = create_store_state(env)
+            if use_PID:
+                action = info['action']
+            env.store_transition(store_state, action, reward, new_store_state, done,t)
+            store_state = new_store_state
+            state = new_state
+            coord_list, feat_list = stack_arrays(coord_list, feat_list, state)
+            if np.linalg.norm(env.jnt_err) < radius:
+                use_PID = True
+            t+=1
+            score += reward
 
-if load_check_ptn:
-    agent.load_models()
-    file = open('tmp/' + score_hist_file + '.pkl', 'rb')
-    loss_hist = pickle.load(file)
-    file = open('tmp/' + loss_hist_file + '.pkl', 'rb')
-    score_history = pickle.load( file)
-else:
-    score_history = []
-    loss_hist = []
+            # print(type(buffer))
+            if not data_q.full() and buffer.mem_cntr>batch_size:
+                s, w, a, r, nxt_s, terms = buffer.sample_buffer(batch_size)
+                try:  
+                    data_q.put((s,w,a,r,nxt_s,terms),timeout=1)
+                except:
+                    pass
+            if recv_dict.poll():
+                # print('recieved state dict')
+                state_dict = recv_dict.recv()
+                actor.load_state_dict(state_dict)
+                for name,param in actor.named_parameters():
+                        param.requires_grad = False
 
-if load_memory:
-    agent.load_memory()
+        buffer.add_data([env.memory])
+        send_score.send(score)
 
-saved_checkpoint = False
+# data loader for RRT data
+def data_loader(buffer, rrt_q):
+    run = True 
+    wait_time = .1
+    max_idle_time = 600
+    max_iter = int(np.ceil(max_idle_time/wait_time))
+    i = 0
+    while run:
+        if not rrt_q.full():
+            s, a, w, r, nxt_s, dones = buffer.sample_buffer(batch_size)
+            try:
+                rrt_q.put([s,a,w,r,nxt_s,dones],timeout=1)
+            except:
+                pass
+            i = 0
+        else:
+            i+=1
+            if i > int(max_iter): # stop runing after 10 seconds 
+                run = False
+                print('exiting')
+            sleep(wait_time)
 
-actor = Actor(1,jnt_dim=5,D=4,name='cpu_copy',device='cpu')
-thred_pool = ThreadPool()
-parallel_pool = ParallelPool(nodes=4)
-for i in range(episodes):
-    t1 = time()
-    actor.load_state_dict(agent.actor.state_dict())
-    workers = [RobotEnv(actor,agent.noise) for i in range(num_workers-1)]
+def save_files(score_hist,loss_hist):
+    file = open(loss_file,'wb')
+    pickle.dump(loss_hist,file)
+    file = open(score_file,'wb')
+    pickle.dump(score_hist,file)
 
-    output = pool.map(run_episode,workers)
-    env, score, converged = run_rrt(RobotEnv(actor,agent.noise))
+def get_cpu_dict(state_dict):
+    for k,v in state_dict.items():
+        state_dict[k] = v.detach().clone().cpu()
+    return state_dict
 
-    mems,scores=[],[]
-    if converged:
-        mems.append(env.memory)
-    for tup in output:
-        env,score = tup[0], tup[1]
-        mems.append(env.memory)
-        scores.append(score)
-    score = np.mean(score)
+# Starting up Processes 
+init_dict = agent.actor.state_dict()
+init_dict = get_cpu_dict(init_dict)
+mail_list = []
+recv_list = []
+print('starting workerts')
+# recv_dict,send_dict = Pipe()
+# recv_score,send_score = Pipe()
+# cpu_worker(recv_dict,send_score,init_dict)
+for i in range(num_workers):
+    print('worker',i)
+    send_dict,recv_dict = Pipe()
+    send_score,recv_score = Pipe()
+    mail_list.append(send_dict)
+    recv_list.append(recv_score)
+    p = Process(target=cpu_worker,args=(recv_dict, send_score, init_dict))
+    workers.append(p)
 
-    agent.memory.add_data(mems)
+for p in workers:
+    p.start()
+for p in workers:
+    print(p.is_alive())
 
-    mem_num = min(agent.memory.mem_cntr,agent.memory.mem_size)
-    if mem_num < batch_size:
-        batch_size_ = mem_num
-        n_batch = 1
-    else: 
-        n_batch = int(np.floor(mem_num/batch_size))
-        batch_size_ = batch_size
-    batch = rng.choice(mem_num,size=n_batch*batch_size_,replace=False)
-
-    loss = 0
-    for _ in range(epochs):
-        for j in range(n_batch):
-            loss+=agent.learn(use_batch=True,batch=batch[j*batch_size:(j+1)*batch_size])
-
-    agent.memory.clear()
-        
-    score_history.append(score)
-    loss_hist.append(loss/(epochs*n_batch))
-
-    if np.mean(score_history[-n:]) > best_score and i > n:
-    # if i%10 == 0:
-        saved_checkpoint = True
-        agent.save_models()
-        best_score = np.mean(score_history[-n:])
-        file = open('tmp/' + score_hist_file + '.pkl', 'wb')
-        pickle.dump(loss_hist,file)
-        file = open('tmp/' + loss_hist_file + '.pkl', 'wb')
-        pickle.dump(score_history, file)
-
-    t2 = time()
-    print('episode', i, 'train_avg %.2f' %np.mean(score_history[-n:]) \
-        ,'final jnt_err', np.round(env.jnt_err,2),'time %.2f' %(t2-t1), 'avg loss', loss/n_batch)
+buffer = ReplayBuffer(file="train_data")
+buffer = buffer.load()
+rrt_guys = []
+for i in range(num_rrt):
+    print('starting rrt guys')
+    p = Process(target=data_loader,args=([buffer,rrt_q]))
+    rrt_guys.append(p)
+    p.start()
 
 
-best_score = np.mean(score_history[-n:])
-file = open('tmp/' + score_hist_file + '.pkl', 'wb')
-pickle.dump(loss_hist,file)
-file = open('tmp/' + loss_hist_file + '.pkl', 'wb')
-pickle.dump(score_history, file)
+# admin 
+k = 0
+score_hist = []
+loss_hist = []
+best_score = np.inf*-1
+print('filling up queue')
+while not data_q.full():
+    sleep(1)
+# try: 
+print('starting to trian')
+keep_going = True
+while k < epochs and keep_going:
+    running_loss = 0
+    print('training')
+    for i in range(n_batch):
+        print(i)
+        if i%10==0:
+            while rrt_q.empty():
+                print('wating on rrt data')
+                sleep(1)
+            b = rrt_q.get()
+        else:
+            while data_q.empty():
+                print('wating on data')
+                sleep(1)
+            b = data_q.get()
+        running_loss += agent.learn(use_data=True,data=b)
+    loss_hist.append(running_loss/n_batch)
 
-if not saved_checkpoint:
-    agent.save_models()
+    score = 0
+    n_scores = 0
+    for channel in recv_list:
+        if channel.poll():
+            score += channel.recv()
+            n_scores += 1
+    
+
+    if n_scores > 0: 
+        score_hist.append(score/n_scores)
+        avg_score = np.mean(score_hist[-n:])
+        if avg_score > best_score:
+            print('check point', avg_score)
+            best_score = avg_score
+            saved = agent.save_models(chckptn=True)
+
+    for channel in mail_list:
+        state_dict = agent.actor.state_dict()
+        state_dict = get_cpu_dict(state_dict)
+        channel.send(state_dict)
+    
+    save_files(score_hist,loss_hist)
+    print('epoch',k, 'average score', np.mean(score_hist[-n:]), 'critic_loss', loss_hist[-1])
+    k+=1
+agent.save_models()
+save_files(score_hist,loss_hist)
+
+for p in workers:
+    print('killing')
+    p.kill()
+for p in rrt_guys:
+    p.kill()
+# except Exception as e:
+#     print(e)
+#     print('killing')
+#     for p in workers:
+#         p.kill()
+#     for p in rrt_guys:
+#         p.kill()
+
+
+

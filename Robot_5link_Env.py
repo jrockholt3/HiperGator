@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit,float64, int32, jit
 from numba.typed import Dict
 from numba.core import types
-from env_config import dt, t_limit, thres, vel_thres, prox_thres, min_prox, vel_prox, tau_max, damping, P, D, jnt_vel_max, j_max
+from env_config import *
 from optimized_functions import calc_jnt_err, PDControl, angle_calc
 from optimized_functions_5L import nxt_state, proximity, calc_ev_dot, reward_func
 # from support_classes import vertex
@@ -74,23 +74,32 @@ def env_replay(th, w, t_start, th_goal, obs_dict, steps, S, a, l):
 
 def gen_rand_pos(quad, S, l):
     # r = the total reach of the robot
+    th = rng.random()*np.pi/2
+    phi = np.pi*(rng.random()*20 - 7)/180
+    xy = np.array([np.cos(th)*np.cos(phi), np.sin(th)*np.cos(phi), np.sin(phi)])
     r = np.sum(S[1:-1]) + np.sum(l)
-    xy = rng.random(3)
+    # xy = rng.random(3)
     if quad==2 or quad==3:
         xy[0] = -1*xy[0]
     if quad==3 or quad==4:
         xy[1] = -1*xy[1]
     
-    mag = (r/2)*.9*rng.random() + r/2
-    p = mag*xy/np.linalg.norm(xy) + np.array([0,0,.3])
-    if p[2] < 0.05:
-        p[2] = .05
-    if p[2] > r*.7+.3:
-        p[2] = r*.7+.3
+    frac = .3
+    mag = (r)*.99*frac*rng.random() + r*(1-frac)
+    p = mag*xy/np.linalg.norm(xy) + np.array([0,0,S[0]])
+    if p[2] < .2:
+        p[2] = .2
+    if p[2] > r*.5+.2:
+        p[2] = r*.5+.2
 
     # orientation
-    u = rng.random(3)
-    u = u/np.linalg.norm(u)
+    keep_trying = True
+    while keep_trying:
+        u = 2*rng.random(3) - 1
+        u = u/np.linalg.norm(u)
+        O5_f = p - u*l[-1]
+        if O5_f[2] > .2:
+            keep_trying = False
 
     return p, u
 
@@ -112,9 +121,9 @@ def gen_obs_pos(obj_list):
     while t <= time_steps:
         i = 0
         for o in obj_list:
-            center = o.curr_pos
+            center = o.path(t)
             temp[:,i] = center
-            o.step()
+            # o.step()
             i+=1
         obs_dict[t] = temp.copy()
         t+=1
@@ -132,16 +141,18 @@ def gen_obs_pos(obj_list):
 #         self.shape = np.array([5])  
 
 class RobotEnv(object):
-    def __init__(self, has_objects=True, num_obj=3, start=None, goal=None, name='robot_5L',batch_size=128):
+    def __init__(self, has_objects=True, num_obj=3, start=None, goal=None, name='robot_5L',batch_size=128,use_goal=False):
 
         if isinstance(start, np.ndarray):
             self.start = start
             self.goal = goal
         else:
             q1 = rng.choice(np.array([1,2,3,4]))
-            q2 = rng.choice(np.array([1,2,3,4]))
-            while q1 == q2:
-                q2 = rng.choice(np.array([1,2,3,4]))
+            q2 = q1 + 2
+            if q2 > 4: q2 = q2%4
+            # q2 = rng.choice(np.array([1,2,3,4]))
+            # while q1 == q2:
+            #     q2 = rng.choice(np.array([1,2,3,4]))
             
             s, u = gen_rand_pos(q1, S, l)
             g, v = gen_rand_pos(q2, S, l)
@@ -150,7 +161,7 @@ class RobotEnv(object):
             th1 = reverse(s,u,S,a,l)
             th1 = th1[0,:]
             while not sol_found:
-                if np.any(np.isnan(th1)):
+                if np.any(np.isnan(th1)): # or np.any(np.abs(th1) >= jnt_max):
                     s,u = gen_rand_pos(q1,S,l)
                     th1 = reverse(s,u,S,a,l)
                     th1 = th1[0,:]
@@ -161,15 +172,15 @@ class RobotEnv(object):
             th2 = reverse(g,v,S,a,l)
             th2 = th2[0,:]
             while not sol_found:
-                if np.any(np.isnan(th2)):
+                if np.any(np.isnan(th2)): #or np.any(np.abs(th2) >= jnt_max):
                     g,v = gen_rand_pos(q2,S,l)
                     th2 = reverse(g,v,S,a,l)
                     th2 = th2[0,:]
                 else:
                     sol_found = True
         
-            self.start = th1
-            self.goal = th2
+            self.start = np.clip(th1, jnt_min, jnt_max)
+            self.goal = np.clip(th2, jnt_min, jnt_max)
 
         self.th = self.start
         self.w = np.zeros_like(self.start,dtype=np.float64)
@@ -186,22 +197,33 @@ class RobotEnv(object):
         weights = np.round(weights/np.linalg.norm(weights),2)
         self.weights = weights
         self.info["converged"] = False
+        self.use_goal = use_goal
 
         if has_objects:
             objs = []
             i = 0
             k = 0
+            q_list = []
             while i < (num_obj) and k < int(1e3):
                 k+=1
-                o = rand_object(dt=dt)
+                quad = int(rng.choice([1,2,3,4]))
+                if len(q_list)>0 and len(q_list)<4:
+                    while quad in q_list:
+                        quad = int(rng.choice([1,2,3,4]))
+                o = rand_object(q=quad)
                 prox = np.inf 
-                for j in range(30):
+                can_use = True
+                mx_t = int(np.ceil(o.tf/dt))
+                for j in range(mx_t):
                     pos_j = o.path(j)
-                    prox_i,zmin = proximity(pos_j, self.start, a, l,S)
-                    if prox_i < prox:
-                        prox = prox_i
-                if prox > min_prox:
-                    objs.append(rand_object(dt=dt))
+                    _,prox_s = proximity(pos_j, self.start, a, l,S)
+                    _,prox_g = proximity(pos_j, self.goal, a,l,S)
+                    if prox_s < vel_prox or prox_g <= min_prox:
+                        j = mx_t+1
+                        can_use = False
+                if can_use:
+                    objs.append(o)
+                    q_list.append(quad)
                     i += 1
             self.objs = objs
         else:
@@ -257,6 +279,7 @@ class RobotEnv(object):
         
         self.t_step += 1
         err = calc_jnt_err(nxt_th, self.goal)
+        self.jnt_err = err
         if self.t_step*dt >= t_limit:
             done = True
         elif np.all(abs(err) < thres) and np.all(abs(nxt_w) < vel_thres):
@@ -268,7 +291,6 @@ class RobotEnv(object):
 
         self.th = nxt_th
         self.w = nxt_w
-        self.jnt_err = err 
         self.dedt = -1*self.w
         coords,feats = [],[]
         if not eval:
@@ -307,6 +329,14 @@ class RobotEnv(object):
         self.t_step = 0
         self.dedt = -1*self.w
         self.memory.clear()
+    
+    def copy(self):
+        env = RobotEnv(start=self.start, goal=self.goal)
+        env.objs = []
+        env.objs = self.objs
+        env.weights = self.weights
+        env.jnt_err = self.jnt_err
+        return env
 
     def store_transition(self,state, action, reward, new_state,done,t_step):
         self.memory.store_transition(state, self.weights, action, reward,new_state,done,t_step)

@@ -3,11 +3,12 @@ from Robot_5link import S,a,l, calc_eef_vel
 from env_config import *
 from support_classes import vertex, Tree
 import numpy as np 
-# import matplotlib as plt
-# from mpl_toolkits import mplot3d
+import matplotlib.pyplot as plt
+from mpl_toolkits import mplot3d
 from time import time 
 from optimized_functions_5L import *
 from optimized_functions import angle_calc, clip
+from multiprocessing import Pool
 
 class RRT_star():
     def __init__(self, start, goal, max_samples, r, d, thres, n, steps, env:RobotEnv):
@@ -27,6 +28,7 @@ class RRT_star():
         self.jnt_max = jnt_max
         self.env = env
         self.obs_dict = gen_obs_pos(env.objs)
+        self.tagged_vs = {}
 
     def add_vertex(self, v:vertex):
         """
@@ -93,6 +95,7 @@ class RRT_star():
     def get_reachable_v2(self, v, targ):
         # calculates a reachable node give the target and current node
         # by setting jerk
+        patience = 0
         if v.t < t_limit/dt:
             targ_i = self.steer(v.th, targ)
             q_ = np.array(targ_i)
@@ -102,6 +105,7 @@ class RRT_star():
             temp = np.ones(5)*tau_max
             score = 0
             i=0
+            p_count = 0
             while i < self.steps and t < t_limit/dt:
                 q_2dot = J*dt + q_2dot
                 q_2dot = np.clip(q_2dot,-tau_max,tau_max)
@@ -112,14 +116,24 @@ class RRT_star():
                 t = t+1
                 eef_vel,eef = calc_eef_vel(q,q_dot)
                 v_dot = calc_ev_dot(eef,eef_vel,self.obs_dict[t])
-                score += reward_func(prox,v_dot,self.env.weights)
+                score += reward_func(prox,v_dot,np.array([0.6,0.4,0.0]))
+                # score += -1 #reward_func(prox,v_dot,self.env.weights)
+                # if prox <= min_prox and p_count<patience: 
+                #     p_count += 1 # don't iterate
+                # else:
+                #     i+=1
+                if prox <= min_prox:
+                    v = vertex(th=tuple(q),t=t,w=q_dot,tau=q_2dot,J=J,reward=score,targ=targ_i)
+                    return v, False
                 i+=1
-            d = np.linalg.norm(q - np.array(v.th))
-            if d >= self.thres and t <= t_limit/dt:
+            # d = np.linalg.norm(q - np.array(v.th))
+            v_win_r = self.get_win_radius(q, self.thres)
+            if len(v_win_r) <= 2:
+            # if d >= self.thres and t <= t_limit/dt:
                 v = vertex(th=tuple(q),t=t,w=q_dot,tau=q_2dot,J=J,reward=score,targ=targ_i)
                 return v, True
             else:
-                v = vertex(None)
+                v = vertex(th=tuple(q),t=t,w=q_dot,tau=q_2dot,J=J,reward=score,targ=targ_i)
                 return v, False
         else:
             v = vertex(None)
@@ -135,7 +149,7 @@ class RRT_star():
         traj = []
         # path.append(goal)
         if start == goal:
-            print('reconstruct_path: start and goal are eqaul')
+            # print('reconstruct_path: start and goal are eqaul')
             return path
         while not curr.id == 0:
             # path.append((curr.t,curr.th,curr.targ))
@@ -183,16 +197,24 @@ class RRT_star():
         
     def can_connect_to_goal(self):
         # check if we can connect
-        v_nearest = self.get_nearest(self.goal)
-        if self.goal in self.tree.E and v_nearest.th in self.tree.E[self.goal]:
-            # goal is already connected 
-            return True
-        if np.linalg.norm(np.array(v_nearest.th) - self.goal) <= self.r:
-            # v_goal = vertex(th=self.goal, t=v_nearest.t+1)
-            # self.add_vertex(v_goal)
-            # self.add_edge(v_goal, v_nearest)
-            return v_nearest, True
-        return None, False
+        win_r = self.get_win_radius(self.goal, self.r)
+        if len(win_r) > 0:
+            r_best = -np.inf
+            for v in win_r:
+                r_i = self.reward_calc(v)
+                if r_i > r_best:
+                    v_best = v.copy()
+                    r_best = r_i
+            return v_best, True
+        else: 
+            return None, False
+
+    def can_connect_with1(self):
+        v = self.get_nearest(self.goal)
+        if np.linalg.norm(v.th-self.goal) < r:
+            return v, True
+        else:
+            return None, False
         
     def rrt_search(self):
         v = vertex(self.start)
@@ -203,26 +225,46 @@ class RRT_star():
         t_list = []
         traj=[]
         v = self.tree.E[0]
-        for i in range(100):
+        for i in range(500):
             th_new = self.sample()
             v_reached, flag = self.get_reachable_v2(v,th_new)
-            if flag:
-                child = self.add_edge(v_reached,v)
-                self.add_vertex(child)
-        
+            child = self.add_edge(v_reached,v)
+            self.add_vertex(child)
+            # if flag:
+            #     child = self.add_edge(v_reached,v)
+            #     self.add_vertex(child)
+
         while not converged:
             # sample a new node
-            if loop_count%10 == 0:
+            if loop_count%10== 0:
                 th_new = self.goal # bias
+                biasing = True
+                n = 2*self.n
+                temp = self.nearby(th_new, n)
+                win_r = self.get_win_radius(th_new,self.r/4) # only add nodes if 
+                id_list = []
+                near = []
+                for v in win_r:
+                    id_list.append(v.id)
+                for v in temp:
+                    if v.id not in id_list:
+                        near.append(v)
             else:
                 th_new = self.sample() # explore 
+                biasing = False 
+                n = self.n
+                near = self.nearby(th_new, n)
             # find n nearest nodes
-            near = self.nearby(th_new, self.n)
+            # near = self.nearby(th_new, n)
             # try to reach new node from nearby nodes
             v_new = []
             for v in near:
-                # v = self.recalc_path(v) # update v's position
-                v_reached,flag = self.get_reachable_v2(v, th_new)
+                if biasing and v.id not in self.tagged_vs: # skip node if we're biasing have already bias from that node
+                    self.tagged_vs[v.id] = v.id
+                    v_reached,flag = self.get_reachable_v2(v, th_new)
+                else:
+                    v_reached,flag = self.get_reachable_v2(v, th_new)
+                # flag,v_reached = tup[1],tup[0]
                 if flag:
                     v_new.append((v,v_reached))
             # add the node with the best reward
@@ -231,17 +273,21 @@ class RRT_star():
            
             loop_count += 1
             if loop_count%100 == 0:
+                # print('at loop', loop_count,'edge_count is',self.edge_count)
                 v_near = self.get_win_radius(self.goal, self.r)
                 if len(v_near) > self.n:
-                    # print('converaged',len(v_near))
                     r_best = -np.inf
                     for v in v_near:
                         r_i = self.reward_calc(v)
                         if r_i > r_best:
                             v_best = v.copy()
                             r_best = r_i
-                    converged = True
+                    # converged = True
                     t_list,traj = self.reconstruct_path(v_best, self.start, self.goal)
+                elif self.edge_count <= 500 and loop_count == 100:
+                    print('bad environment')
+                    converged = True # excit bc bad environment
+                    t_list,traj = [],[]
                 
             if loop_count>=self.max_samples:
                 v, converged = self.can_connect_to_goal()
@@ -249,9 +295,9 @@ class RRT_star():
                     t_list,traj = self.reconstruct_path(v, self.start, self.goal)
                 else:
                     print('failed to converge')
+                    t_list,traj = [],[]
                     converged = True
         
-        # print("edge_count",self.edge_count)
         return t_list, traj
     
     def plot_graph(self, every=10, add_path=False, path=None):
@@ -268,7 +314,7 @@ class RRT_star():
             if i%every == 0:
                 parent = self.tree.E[k]
                 arr = np.array(parent.th)
-                th_arr.append(arr)
+                th_arr.append(arr[0:3])
                 # child_th = entres[k]
                 # # parent = self.tree.E[k]
                 # xx = np.array([parent.th[0], child_th[0]])
